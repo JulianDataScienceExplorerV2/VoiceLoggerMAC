@@ -1,0 +1,6 @@
+PySide6>=6.7
+numpy
+scipy
+sounddevice
+mlx-whisper
+mlx-lm
