@@ -1,19 +1,21 @@
 # VoiceLoggerMac
 
-App local para macOS que transcribe reuniones y contenido en tiempo real (Zoom, Teams, Meet, DingTalk, YouTube, etc.) sin enviar audio a la nube.
+[English](README.md) | [Español](README.es.md)
 
-Usa **MLX Whisper** en Apple Silicon, captura de audio del sistema con **ScreenCaptureKit** (helper en Swift) o micrófono, segmentación por voz (VAD), subtítulos flotantes, alertas por palabras clave, historial exportable y **resumen IA local** con Qwen.
+Local macOS app that transcribes meetings and content in real time (Zoom, Teams, Meet, DingTalk, YouTube, etc.) without sending audio to the cloud.
 
-## Requisitos
+It uses **MLX Whisper** on Apple Silicon, system-audio capture via **ScreenCaptureKit** (Swift helper) or microphone, voice-activity segmentation (VAD), a floating caption overlay, keyword alerts, exportable history, and a **local AI summary** with Qwen.
 
-- macOS 13 o superior, en **Apple Silicon** (M1/M2/M3/M4...). MLX no funciona en Intel.
+## Requirements
+
+- macOS 13 or newer on **Apple Silicon** (M1/M2/M3/M4...). MLX does not work on Intel.
 - Xcode Command Line Tools: `xcode-select --install`
 - [`uv`](https://docs.astral.sh/uv/getting-started/installation/): `brew install uv`
-- Python 3.11 para el entorno virtual.
-  > `setup.sh` busca Python en `/opt/homebrew/bin/python3.11`. Si tu instalación usa otra ruta, instala `python@3.11` con Homebrew (`brew install python@3.11`) o edita esa línea en `setup.sh`.
-- Conexión a internet **solo la primera vez**, para descargar dependencias y modelos.
+- Python 3.11 for the virtual environment.
+  > `setup.sh` looks for Python at `/opt/homebrew/bin/python3.11`. If your installation uses a different path, install `python@3.11` with Homebrew (`brew install python@3.11`) or edit that line in `setup.sh`.
+- An internet connection **only the first time**, to download dependencies and models.
 
-## Instalación
+## Installation
 
 ```bash
 git clone https://github.com/JulianDataScienceExplorerV2/VoiceLoggerMAC.git
@@ -22,121 +24,121 @@ chmod +x setup.sh run.sh
 ./setup.sh
 ```
 
-`setup.sh` hace 3 cosas:
+`setup.sh` does 3 things:
 
-1. Crea `.venv` con Python 3.11.
-2. Instala las dependencias de `requirements.txt` (PySide6, numpy, scipy, sounddevice, mlx-whisper, mlx-lm).
-3. Compila `swift/SystemAudioCapture.swift` a `.build/system_audio_capture` (el capturador de audio del sistema con ScreenCaptureKit).
+1. Creates `.venv` with Python 3.11.
+2. Installs the dependencies from `requirements.txt` (PySide6, numpy, scipy, sounddevice, mlx-whisper, mlx-lm).
+3. Compiles `swift/SystemAudioCapture.swift` to `.build/system_audio_capture` (the ScreenCaptureKit system-audio capturer).
 
-## Ejecutar
+## Running
 
 ```bash
 open VoiceLoggerMac.app
 ```
 
-o
+or
 
 ```bash
 ./run.sh
 ```
 
-o directamente:
+or directly:
 
 ```bash
 .venv/bin/python main.py
 ```
 
-## Permisos de macOS (importante)
+## macOS permissions (important)
 
-Sin esto la app no puede capturar audio. Después de concederlos, **cierra y vuelve a abrir la app**.
+Without these, the app cannot capture audio. After granting them, **quit and reopen the app**.
 
-1. **Audio del sistema** (para Zoom/Teams/Meet/YouTube...):
-   `Ajustes del Sistema > Privacidad y Seguridad > Grabación de pantalla y audio del sistema` → activa **VoiceLoggerMac**.
-   Si ejecutas desde Terminal, activa también **Terminal** (o tu terminal).
-2. **Micrófono** (solo si eliges la fuente "Micrófono"):
-   `Ajustes del Sistema > Privacidad y Seguridad > Micrófono` → activa **VoiceLoggerMac**.
+1. **System audio** (for Zoom/Teams/Meet/YouTube...):
+   `System Settings > Privacy & Security > Screen Recording & System Audio Recording` → enable **VoiceLoggerMac**.
+   If you run it from Terminal, also enable **Terminal** (or your terminal app).
+2. **Microphone** (only if you choose the "Microphone" source):
+   `System Settings > Privacy & Security > Microphone` → enable **VoiceLoggerMac**.
 
-## Modelos: no hay que descargarlos a mano
+## Models: no manual download needed
 
-Los modelos se descargan **automáticamente desde Hugging Face la primera vez** que se usan y quedan en la caché local de Hugging Face (`~/.cache/huggingface/`). Después funcionan sin internet. La primera descarga puede tardar varios minutos y ocupar unos pocos GB en total.
+Models are downloaded **automatically from Hugging Face the first time** they are used and kept in the local Hugging Face cache (`~/.cache/huggingface/`). After that they work offline. The first download can take several minutes and a few GB in total.
 
-### Transcripción (Whisper MLX)
+### Transcription (Whisper MLX)
 
-El modelo por defecto es `mlx-community/whisper-large-v3-turbo-q4` (equilibrio recomendado entre calidad y consumo). Puedes cambiarlo en la GUI, en "MODELO WHISPER (MLX)":
+The default model is `mlx-community/whisper-large-v3-turbo-q4` (recommended balance of quality and power consumption). You can change it in the GUI, under "WHISPER MODEL (MLX)":
 
-| Opción en la GUI | Repo en Hugging Face |
+| GUI option | Hugging Face repo |
 |---|---|
-| Whisper Large v3 Turbo Q4 (recomendado) | `mlx-community/whisper-large-v3-turbo-q4` |
-| Whisper Large v3 Turbo (máxima calidad) | `mlx-community/whisper-large-v3-turbo` |
-| Whisper Small English (ligero) | `mlx-community/whisper-small.en-mlx` |
-| Whisper Base English (ultra ligero) | `mlx-community/whisper-base.en-mlx` |
-| Whisper Tiny (solo pruebas) | `mlx-community/whisper-tiny` |
+| Whisper Large v3 Turbo Q4 (recommended) | `mlx-community/whisper-large-v3-turbo-q4` |
+| Whisper Large v3 Turbo (best quality) | `mlx-community/whisper-large-v3-turbo` |
+| Whisper Small English (lightweight) | `mlx-community/whisper-small.en-mlx` |
+| Whisper Base English (ultra lightweight) | `mlx-community/whisper-base.en-mlx` |
+| Whisper Tiny (testing only) | `mlx-community/whisper-tiny` |
 
-Al cambiar de modelo, la primera transcripción con ese modelo tardará más porque lo descarga/carga.
+When you switch models, the first transcription with that model will take longer because it downloads/loads it.
 
-Idiomas disponibles en la GUI: Inglés, Auto-detectar, Español, Portugués.
+Languages available in the GUI: English, Auto-detect, Spanish, Portuguese.
 
-### Resumen IA (Qwen local)
+### AI summary (local Qwen)
 
-El botón "Resumen IA" usa `mlx-community/Qwen2.5-1.5B-Instruct-4bit` (definido en `summarizer.py`). También se descarga solo la primera vez que pulsas el botón.
+The "AI Summary" button uses `mlx-community/Qwen2.5-1.5B-Instruct-4bit` (defined in `summarizer.py`). It is also downloaded only the first time you press the button.
 
-### Descarga manual opcional (pre-descargar)
+### Optional manual download (pre-download)
 
-Si prefieres descargar los modelos antes de abrir la app:
+If you prefer to download the models before opening the app:
 
 ```bash
 .venv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/whisper-large-v3-turbo-q4')"
 .venv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/Qwen2.5-1.5B-Instruct-4bit')"
 ```
 
-## Uso básico
+## Basic usage
 
-1. Elige la fuente: **Audio del sistema** o **Micrófono**.
-2. Elige modelo Whisper e idioma.
-3. (Opcional) Escribe vocabulario/contexto: nombres, productos, jerga. Ayuda a que Whisper acierte palabras.
-4. Ajusta la sensibilidad de voz si se corta o si entra ruido.
-5. Pulsa **Iniciar escucha**. **Subtítulos** muestra la ventana flotante con las últimas frases.
-6. Puedes activar **alertas** con palabras clave (ej: `julian, deadline, urgente`).
-7. **Guardar TXT** (Cmd+S), **Copiar todo**, **Resumen IA** e **Historial** (exporta a Markdown o PDF).
+1. Choose the source: **System audio** or **Microphone**.
+2. Choose the Whisper model and language.
+3. (Optional) Enter vocabulary/context: names, products, jargon. This helps Whisper get words right.
+4. Adjust voice sensitivity if speech gets cut off or noise comes through.
+5. Click **Start listening**. **Captions** shows the floating window with the latest phrases.
+6. You can enable **alerts** with keywords (e.g. `julian, deadline, urgent`).
+7. **Save TXT** (Cmd+S), **Copy all**, **AI Summary**, and **History** (exports to Markdown or PDF).
 
-Los logs se guardan localmente en `logs/transcripcion_AAAA-MM-DD.txt` y `.jsonl`.
+Logs are saved locally in `logs/transcripcion_YYYY-MM-DD.txt` and `.jsonl`.
 
-## Privacidad
+## Privacy
 
-- Todo se procesa en tu Mac: audio, transcripción y resumen no salen a ningún servidor.
-- Las transcripciones son contenido privado de tus reuniones. El `.gitignore` ya excluye `logs/`, `.venv/`, `.build/` y cachés, pero **no compartas la carpeta `logs/` ni subas exports con transcripciones reales**.
+- Everything is processed on your Mac: audio, transcription, and summaries never leave your machine.
+- Transcripts are private meeting content. The `.gitignore` already excludes `logs/`, `.venv/`, `.build/`, and caches, but **do not share the `logs/` folder or upload exports with real transcripts**.
 
-## Estructura
+## Project structure
 
 ```
 .
-├── main.py               # Punto de entrada
-├── app_gui.py            # Interfaz PySide6 (ventana, overlay, alertas, historial)
-├── audio_capture.py      # Captura sistema/micrófono + segmentación VAD
-├── transcriber.py        # Transcripción con MLX Whisper
-├── summarizer.py         # Resumen IA local con Qwen (mlx-lm)
-├── logger.py             # Guardado TXT/JSONL en logs/
-├── history_dialog.py     # Historial y exportación MD/PDF
-├── benchmark.py          # Benchmark de modelos Whisper
-├── swift/                # Helper ScreenCaptureKit
-├── VoiceLoggerMac.app/   # Lanzador de la app para macOS
-├── setup.sh              # Instalación (venv + dependencias + helper Swift)
-└── run.sh                # Abre la app
+├── main.py               # Entry point
+├── app_gui.py            # PySide6 GUI (window, overlay, alerts, history)
+├── audio_capture.py      # System/microphone capture + VAD segmentation
+├── transcriber.py        # MLX Whisper transcription
+├── summarizer.py         # Local AI summary with Qwen (mlx-lm)
+├── logger.py             # TXT/JSONL logging in logs/
+├── history_dialog.py     # History and MD/PDF export
+├── benchmark.py          # Whisper model benchmark
+├── swift/                # ScreenCaptureKit helper
+├── VoiceLoggerMac.app/   # macOS app launcher
+├── setup.sh              # Setup (venv + dependencies + Swift helper)
+└── run.sh                # Opens the app
 ```
 
-## Benchmark (opcional)
+## Benchmark (optional)
 
-Compara velocidad/RAM de los modelos Whisper con un WAV de prueba:
+Compare Whisper model speed/RAM with a test WAV file:
 
 ```bash
 .venv/bin/python benchmark.py --audio /tmp/vl_bench.wav
 ```
 
-## Problemas frecuentes
+## Troubleshooting
 
-- **"No se encontró el capturador de audio"** → ejecuta `./setup.sh` para compilar `.build/system_audio_capture`.
-- **macOS bloquea la captura** → revisa los permisos de la sección anterior y reinicia la app.
-- **La primera transcripción tarda mucho** → está descargando el modelo de Whisper. Es normal, solo pasa una vez por modelo.
-- **Error con el resumen (`mlx_lm` no instalado)** → reinstala dependencias: `uv pip install --python .venv/bin/python -r requirements.txt` (incluye `mlx-lm`).
-- **Error de ruta de Python en `setup.sh`** → comprueba que existe `/opt/homebrew/bin/python3.11` o ajusta la ruta.
-- **No detecta la voz / entra ruido** → sube/baja la sensibilidad (VAD) en la GUI y prueba el filtro "Claridad de voz" con micrófono.
+- **"Audio capturer not found"** → run `./setup.sh` to compile `.build/system_audio_capture`.
+- **macOS blocks capture** → check the permissions in the section above and restart the app.
+- **First transcription takes a long time** → it is downloading the Whisper model. This is normal, and only happens once per model.
+- **Summary error (`mlx_lm` not installed)** → reinstall dependencies: `uv pip install --python .venv/bin/python -r requirements.txt` (includes `mlx-lm`).
+- **Python path error in `setup.sh`** → check that `/opt/homebrew/bin/python3.11` exists or adjust the path.
+- **Voice not detected / too much noise** → raise/lower the VAD sensitivity in the GUI and try the "Voice clarity" filter with the microphone.
