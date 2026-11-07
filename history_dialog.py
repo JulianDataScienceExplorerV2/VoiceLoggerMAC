@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QSplitter,
@@ -100,14 +101,19 @@ class HistoryDialog(QDialog):
         files.sort(reverse=True)
         self.list_files.clear()
         for name in files:
-            self.list_files.addItem(name)
+            # transcripcion_2026-11-07.txt -> "2026-11-07" (el nombre real va en el tooltip)
+            label = name[len("transcripcion_"):-len(".txt")] or name
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, name)
+            item.setToolTip(name)
+            self.list_files.addItem(item)
         if files:
             self.list_files.setCurrentRow(0)
 
     def _load_selected(self, item):
         if not item:
             return
-        path = os.path.join(self.logs_dir, item.text())
+        path = os.path.join(self.logs_dir, item.data(Qt.UserRole))
         try:
             with open(path, "r", encoding="utf-8") as f:
                 self._content = f.read()
@@ -184,7 +190,14 @@ class HistoryDialog(QDialog):
         printer = QPrinter(QPrinter.HighResolution)
         printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
         printer.setOutputFileName(path)
-        document.print_(printer)
+        try:
+            document.print_(printer)
+        except Exception as exc:  # noqa: BLE001 - error de Qt/impresión
+            QMessageBox.critical(self, "Error", f"No se pudo exportar el PDF:\n{exc}")
+            return
+        if not os.path.exists(path):
+            QMessageBox.critical(self, "Error", "No se pudo crear el archivo PDF.")
+            return
         QMessageBox.information(self, "Exportado", f"Archivo guardado en:\n{path}")
 
     def _copy_all(self):

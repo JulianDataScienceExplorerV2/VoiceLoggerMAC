@@ -12,7 +12,7 @@ It uses **MLX Whisper** on Apple Silicon, system-audio capture via **ScreenCaptu
 - Xcode Command Line Tools: `xcode-select --install`
 - [`uv`](https://docs.astral.sh/uv/getting-started/installation/): `brew install uv`
 - Python 3.11 for the virtual environment.
-  > `setup.sh` looks for Python at `/opt/homebrew/bin/python3.11`. If your installation uses a different path, install `python@3.11` with Homebrew (`brew install python@3.11`) or edit that line in `setup.sh`.
+  > `setup.sh` asks `uv` for Python 3.11 (`uv venv --python 3.11`); `uv` finds it or downloads it automatically.
 - An internet connection **only the first time**, to download dependencies and models.
 
 ## Installation
@@ -134,11 +134,49 @@ Compare Whisper model speed/RAM with a test WAV file:
 .venv/bin/python benchmark.py --audio /tmp/vl_bench.wav
 ```
 
+## Real-world testing (no personal data)
+
+Tested in 2026 on a MacBook Pro with **Apple M3 Pro**, using **synthetic audio only** (macOS `say` text-to-speech, no real meetings, no personal data published).
+
+**Synthetic accuracy test** — a 13.0 s TTS clip with a known phrase was transcribed verbatim by the default model (`whisper-large-v3-turbo-q4`) in 4.01 s including model load (RTF 0.308). Session logs from real use (216 blocks in one meeting) were **not** published, only counted.
+
+**Benchmark (`benchmark.py`, synthetic WAV)** — no thermal warnings before or after:
+
+| Model | Audio | Cold | Warm | RTF | Peak RAM |
+|---|---|---|---|---|---|
+| Turbo Q4 | 10 s | 1.81 s | 0.72 s | 0.072 | 0.74 GB |
+| Turbo Q4 | 30 s | 1.25 s | 0.79 s | 0.026 | 0.75 GB |
+| Turbo | 10 s | 1.44 s | 0.78 s | 0.077 | 1.72 GB |
+| Turbo | 30 s | 1.10 s | 0.80 s | 0.027 | 1.73 GB |
+
+Warm runs are ~13–38× faster than real time, so live capture is not the bottleneck on M-series chips.
+
+**Smoke tests (passed):** `py_compile` on all modules; logger writes TXT/JSONL to a temp dir; `PhraseSegmenter` detects exactly 1 phrase in synthetic silence + noise.
+
+Reproduce the synthetic test:
+
+```bash
+say -v Samantha -r 160 -o /tmp/vl_bench.aiff "Hello, this is a synthetic test. Voice Logger Mac transcribes meetings locally, without sending audio to the cloud."
+afconvert -f WAVE -d LEI16@16000 /tmp/vl_bench.aiff /tmp/vl_bench.wav
+.venv/bin/python benchmark.py --audio /tmp/vl_bench.wav --models Turbo-Q4,Turbo
+```
+
+## Similar projects & roadmap
+
+Similar tools exist — e.g. **MacWhisper** and **Superwhisper** (commercial, local Whisper + meetings), **Buzz** (open source, file + live transcription), and open-source local-first apps like **Meetily**, **Tacet**, and **MeetScribe** (ScreenCaptureKit + Whisper). VoiceLoggerMac's niche is a lightweight, fully local, PySide6 app with live PiP captions, keyword alerts, and a local Qwen summary.
+
+Planned improvements next:
+
+- Speaker labels (system = them, mic = you) and optional diarization
+- Export to SRT/VTT subtitles and import/transcribe audio files
+- Chunked summaries for long meetings (today the summarizer truncates at 6,000 chars)
+- Auto-detect meeting start, full-text search across all sessions, automated tests/CI
+
 ## Troubleshooting
 
 - **"Audio capturer not found"** → run `./setup.sh` to compile `.build/system_audio_capture`.
 - **macOS blocks capture** → check the permissions in the section above and restart the app.
 - **First transcription takes a long time** → it is downloading the Whisper model. This is normal, and only happens once per model.
 - **Summary error (`mlx_lm` not installed)** → reinstall dependencies: `uv pip install --python .venv/bin/python -r requirements.txt` (includes `mlx-lm`).
-- **Python path error in `setup.sh`** → check that `/opt/homebrew/bin/python3.11` exists or adjust the path.
+- **Python error in `setup.sh`** → run `uv python install 3.11` and try again.
 - **Voice not detected / too much noise** → raise/lower the VAD sensitivity in the GUI and try the "Voice clarity" filter with the microphone.

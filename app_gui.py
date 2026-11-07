@@ -109,10 +109,15 @@ class WaveformVisualizer(QWidget):
 
 
 class CaptionOverlay(QWidget):
+    closed = Signal()
+
     def __init__(self):
         super().__init__(None, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
+        # En macOS las ventanas Qt.Tool se ocultan al perder el foco la app,
+        # justo cuando estás en Zoom/Teams. Esto las mantiene visibles.
+        self.setAttribute(Qt.WA_MacAlwaysShowToolWindow)
         self.setMinimumSize(520, 120)
         self.resize(820, 170)
 
@@ -135,13 +140,24 @@ class CaptionOverlay(QWidget):
         )
         hint = QLabel("arrastra para mover")
         hint.setStyleSheet("color: #475569; font-size: 10px;")
+        self.btn_close = QPushButton("✕")
+        self.btn_close.setCursor(Qt.PointingHandCursor)
+        self.btn_close.setFixedSize(20, 20)
+        self.btn_close.setToolTip("Ocultar subtítulos")
+        self.btn_close.setStyleSheet(
+            "QPushButton { color: #64748b; background: transparent; border: none; "
+            "font-size: 12px; padding: 0; } "
+            "QPushButton:hover { color: #f8fafc; background: #2c2c40; border-radius: 10px; }"
+        )
+        self.btn_close.clicked.connect(self._on_close_clicked)
         header.addWidget(self.dot)
         header.addWidget(title)
         header.addStretch()
         header.addWidget(hint)
+        header.addWidget(self.btn_close)
         card_layout.addLayout(header)
 
-        self.text_label = QLabel("Esperando audio...")
+        self.text_label = QLabel("Esperando audio…")
         self.text_label.setWordWrap(True)
         self.text_label.setTextFormat(Qt.RichText)
         self.text_label.setStyleSheet(
@@ -167,6 +183,10 @@ class CaptionOverlay(QWidget):
             }
             """
         )
+
+    def _on_close_clicked(self):
+        self.hide()
+        self.closed.emit()
 
     def move_to_default_position(self):
         screen = QApplication.primaryScreen()
@@ -194,7 +214,7 @@ class CaptionOverlay(QWidget):
         for entry in entries[-3:]:
             self.lines.append((entry["timestamp"], entry["text"]))
         if not self.lines:
-            self.text_label.setText("Esperando audio...")
+            self.text_label.setText("Esperando audio…")
             return
         timestamp_size = max(11, self._font_size - 9)
         parts = []
@@ -222,33 +242,45 @@ class CaptionOverlay(QWidget):
         event.accept()
 
 
-class AlertToast(QWidget):
+class Toast(QWidget):
+    """Aviso flotante no bloqueante (alertas, confirmaciones y errores)."""
+
+    STYLES = {
+        "alert": ("#7f1d1d", "#ef4444", "#fff1f2", "ALERTA"),
+        "info": ("#052e2b", "#10b981", "#ecfdf5", None),
+        "error": ("#3b0d0d", "#f87171", "#fee2e2", "ERROR"),
+    }
+
     def __init__(self):
         super().__init__(None, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WA_MacAlwaysShowToolWindow)
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        frame = QFrame()
-        frame.setObjectName("alertToast")
-        layout = QHBoxLayout(frame)
+        self.frame = QFrame()
+        self.frame.setObjectName("toastFrame")
+        layout = QHBoxLayout(self.frame)
         layout.setContentsMargins(16, 10, 16, 10)
         self.label = QLabel("")
-        self.label.setStyleSheet(
-            "color: #fff1f2; font-size: 14px; font-weight: 700; background: transparent;"
-        )
+        self.label.setWordWrap(True)
+        self.label.setMaximumWidth(420)
         layout.addWidget(self.label)
-        root.addWidget(frame)
-        self.setStyleSheet(
-            "QFrame#alertToast { background-color: #7f1d1d; "
-            "border: 1px solid #ef4444; border-radius: 10px; }"
-        )
+        root.addWidget(self.frame)
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self.hide)
 
-    def show_message(self, text):
-        self.label.setText(f"ALERTA: {text}")
+    def show_message(self, text, kind="alert", duration_ms=None):
+        bg, border, fg, prefix = self.STYLES.get(kind, self.STYLES["alert"])
+        self.frame.setStyleSheet(
+            f"QFrame#toastFrame {{ background-color: {bg}; "
+            f"border: 1px solid {border}; border-radius: 10px; }}"
+        )
+        self.label.setStyleSheet(
+            f"color: {fg}; font-size: 13px; font-weight: 700; background: transparent;"
+        )
+        self.label.setText(f"{prefix}: {text}" if prefix else text)
         self.adjustSize()
         screen = QApplication.primaryScreen()
         if screen:
@@ -256,7 +288,7 @@ class AlertToast(QWidget):
             self.move(geometry.right() - self.width() - 30, geometry.top() + 30)
         self.show()
         self.raise_()
-        self._timer.start(4000)
+        self._timer.start(duration_ms or (4000 if kind == "alert" else 2800))
 
 
 class SummaryWorker(QThread):
@@ -277,7 +309,7 @@ class SummaryWorker(QThread):
 class SummaryDialog(QDialog):
     def __init__(self, text, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Resumen de la reunion")
+        self.setWindowTitle("Resumen de la reunión")
         self.resize(760, 640)
         self.summary_text = text
 
@@ -343,6 +375,7 @@ class TranscribeWorker(QThread):
         self.logger = logger
         self.queue = queue.Queue(maxsize=40)
         self._running = True
+        self._stop_timeout_ms = 10000
 
     def enqueue_audio(self, phrase):
         if self.queue.full():
@@ -366,9 +399,19 @@ class TranscribeWorker(QThread):
             self.queue.put_nowait(None)
         except queue.Full:
             pass
-        self.wait(3000)
+        # Una transcripción en curso puede tardar; si aun así no termina, se
+        # fuerza para que Qt no aborte con "Destroyed while thread is running".
+        if not self.wait(self._stop_timeout_ms):
+            self.terminate()
+            self.wait(1000)
 
     def run(self):
+        # Precarga el modelo en este mismo hilo (el que luego transcribe) para
+        # que la primera frase no pague la carga/descarga.
+        if not self.transcriber.model_loaded:
+            self.status_updated.emit("Cargando modelo (la primera vez puede tardar)...")
+            self.transcriber.warmup()
+            self.status_updated.emit("Escuchando...")
         while self._running:
             try:
                 item = self.queue.get(timeout=0.25)
@@ -415,7 +458,10 @@ class VoiceLoggerWindow(QMainWindow):
 
         self.logger = TranscriptLogger()
         self.transcriber = SpeechTranscriber(model_size=DEFAULT_MODEL, language="en")
-        self.all_entries = deque(maxlen=3000)
+        # Sin límite: exportar, copiar y resumir deben incluir toda la reunión.
+        self.all_entries = deque()
+        self._rendered_count = 0
+        self._loading_settings = False
         self.start_session_time = None
         self._last_entry_wall_ts = 0.0
         self._source = None
@@ -435,8 +481,10 @@ class VoiceLoggerWindow(QMainWindow):
         self.overlay.set_text_size(self.transcript_font_size + 5)
         self.overlay.hide()
 
-        self.alert_toast = AlertToast()
+        self.toast = Toast()
+        self.overlay.closed.connect(self._on_overlay_closed)
         self._last_alert_at = 0.0
+        self._last_error_toast_at = 0.0
         self._summary_worker = None
 
         self.search_timer = QTimer(self)
@@ -458,7 +506,8 @@ class VoiceLoggerWindow(QMainWindow):
         self.init_ui()
         self.apply_dark_theme()
         self.setup_tray_icon()
-        QShortcut(QKeySequence.StandardKey.Save, self, activated=self.save_meeting_txt)
+        self._setup_shortcuts()
+        self._load_settings()
 
         self.timer_session = QTimer(self)
         self.timer_session.setInterval(1000)
@@ -505,9 +554,9 @@ class VoiceLoggerWindow(QMainWindow):
         )
         header_layout.addWidget(self.lbl_timer)
 
-        self.btn_pip = QPushButton("Subtitulos")
+        self.btn_pip = QPushButton("Subtítulos")
         self.btn_pip.setObjectName("btn_header_action")
-        self.btn_pip.setToolTip("Ventana flotante siempre visible con las ultimas frases")
+        self.btn_pip.setToolTip("Ventana flotante siempre visible con las últimas frases (Cmd+Shift+L)")
         self.btn_pip.clicked.connect(self.toggle_overlay)
         header_layout.addWidget(self.btn_pip)
 
@@ -518,7 +567,7 @@ class VoiceLoggerWindow(QMainWindow):
 
         self.main_layout.addWidget(self.header_card)
 
-        self.settings_group = QGroupBox("Captura y motor de transcripcion")
+        self.settings_group = QGroupBox("Captura y motor de transcripción")
         self.settings_group.setObjectName("settingsGroup")
         settings_layout = QVBoxLayout(self.settings_group)
         settings_layout.setSpacing(10)
@@ -532,7 +581,7 @@ class VoiceLoggerWindow(QMainWindow):
         source_label.setObjectName("fieldLabel")
         self.combo_source = QComboBox()
         self.combo_source.addItem("Audio del sistema (DingTalk, Zoom, Teams, Meet)", "system")
-        self.combo_source.addItem("Microfono", "mic")
+        self.combo_source.addItem("Micrófono", "mic")
         source_box.addWidget(source_label)
         source_box.addWidget(self.combo_source)
         row1.addLayout(source_box, 3)
@@ -580,7 +629,7 @@ class VoiceLoggerWindow(QMainWindow):
         self.slider_sens = QSlider(Qt.Horizontal)
         self.slider_sens.setRange(10, 150)
         self.slider_sens.setValue(35)
-        self.slider_sens.setToolTip("Umbral de energia para detectar voz. Sube si se corta, baja si entra ruido.")
+        self.slider_sens.setToolTip("Umbral de energía para detectar voz. Sube si se corta, baja si entra ruido.")
         self.slider_sens.valueChanged.connect(self.on_sensitivity_changed)
         self.lbl_sens_val = QLabel("Recomendada")
         self.lbl_sens_val.setStyleSheet(
@@ -596,7 +645,7 @@ class VoiceLoggerWindow(QMainWindow):
 
         row3 = QHBoxLayout()
         row3.setSpacing(16)
-        self.chk_enhance = QCheckBox("Claridad de voz (filtro pasa-altos en microfono)")
+        self.chk_enhance = QCheckBox("Claridad de voz (filtro pasa-altos en micrófono)")
         self.chk_enhance.setChecked(False)
         self.chk_enhance.setStyleSheet("color: #38bdf8; font-weight: 600;")
         row3.addWidget(self.chk_enhance)
@@ -621,8 +670,8 @@ class VoiceLoggerWindow(QMainWindow):
         summary_label = QLabel("IDIOMA DEL RESUMEN IA")
         summary_label.setObjectName("fieldLabel")
         self.combo_summary_lang = QComboBox()
-        self.combo_summary_lang.addItem("Espanol", "es")
-        self.combo_summary_lang.addItem("Ingles", "en")
+        self.combo_summary_lang.addItem("Español", "es")
+        self.combo_summary_lang.addItem("Inglés", "en")
         summary_box.addWidget(summary_label)
         summary_box.addWidget(self.combo_summary_lang)
         row4.addLayout(summary_box, 2)
@@ -673,7 +722,7 @@ class VoiceLoggerWindow(QMainWindow):
         button_layout = QHBoxLayout()
         button_layout.setSpacing(10)
 
-        self.btn_start = QPushButton("Iniciar escucha")
+        self.btn_start = QPushButton("●  Iniciar escucha")
         self.btn_start.setObjectName("btn_start")
         self.btn_start.clicked.connect(self.start_listening)
 
@@ -730,7 +779,7 @@ class VoiceLoggerWindow(QMainWindow):
         filter_layout = QHBoxLayout()
         filter_layout.setSpacing(10)
         self.edit_search = QLineEdit()
-        self.edit_search.setPlaceholderText("Filtrar por palabra clave (resaltado automatico)...")
+        self.edit_search.setPlaceholderText("Filtrar por palabra clave (Cmd+F)…")
         self.edit_search.textChanged.connect(self.search_timer.start)
         filter_layout.addWidget(self.edit_search, 1)
 
@@ -742,13 +791,13 @@ class VoiceLoggerWindow(QMainWindow):
         self.btn_font_minus = QPushButton("A-")
         self.btn_font_minus.setObjectName("btn_font")
         self.btn_font_minus.setFixedWidth(38)
-        self.btn_font_minus.setToolTip("Reducir tamano de letra")
+        self.btn_font_minus.setToolTip("Reducir tamaño de letra")
         self.btn_font_minus.clicked.connect(lambda: self.change_font_size(-1))
 
         self.btn_font_plus = QPushButton("A+")
         self.btn_font_plus.setObjectName("btn_font")
         self.btn_font_plus.setFixedWidth(38)
-        self.btn_font_plus.setToolTip("Aumentar tamano de letra")
+        self.btn_font_plus.setToolTip("Aumentar tamaño de letra")
         self.btn_font_plus.clicked.connect(lambda: self.change_font_size(1))
 
         filter_layout.addWidget(self.btn_font_minus)
@@ -757,11 +806,14 @@ class VoiceLoggerWindow(QMainWindow):
 
         self.text_transcript = QTextEdit()
         self.text_transcript.setReadOnly(True)
-        self.text_transcript.document().setMaximumBlockCount(3000)
+        self.text_transcript.setPlaceholderText(
+            "La transcripción aparecerá aquí.\n\n"
+            "Pulsa «Iniciar escucha» (Cmd+Enter) para capturar el audio del sistema o el micrófono."
+        )
         self.main_layout.addWidget(self.text_transcript)
 
         footer = QHBoxLayout()
-        self.lbl_phrase_count = QLabel("Bloques: 0")
+        self.lbl_phrase_count = QLabel("0 bloques · 0 palabras")
         self.lbl_phrase_count.setStyleSheet(
             "color: #64748b; font-size: 12px; font-weight: 600;"
         )
@@ -798,10 +850,10 @@ class VoiceLoggerWindow(QMainWindow):
             self.overlay.set_entries(list(self.all_entries))
             self.overlay.show()
             self.overlay.raise_()
-            self.btn_pip.setText("Ocultar subtitulos")
+            self.btn_pip.setText("Ocultar subtítulos")
         else:
             self.overlay.hide()
-            self.btn_pip.setText("Subtitulos")
+            self.btn_pip.setText("Subtítulos")
 
     def setup_tray_icon(self):
         self.tray_icon = QSystemTrayIcon(self)
@@ -812,9 +864,9 @@ class VoiceLoggerWindow(QMainWindow):
         tray_menu = QMenu()
         act_show = tray_menu.addAction("Mostrar ventana")
         act_show.triggered.connect(self.showNormal)
-        act_save = tray_menu.addAction("Guardar TXT de la reunion")
+        act_save = tray_menu.addAction("Guardar TXT de la reunión")
         act_save.triggered.connect(self.save_meeting_txt)
-        act_overlay = tray_menu.addAction("Subtitulos flotantes")
+        act_overlay = tray_menu.addAction("Subtítulos flotantes")
         act_overlay.triggered.connect(self.toggle_overlay)
         act_toggle = tray_menu.addAction("Iniciar / Detener")
         act_toggle.triggered.connect(self.toggle_listening)
@@ -834,12 +886,85 @@ class VoiceLoggerWindow(QMainWindow):
         model = self.combo_model.currentData()
         language = self.combo_lang.currentData() or "en"
         context = self.edit_context.text()
+        # apply_settings ya limpia el contexto solo cuando algo cambió; antes se
+        # limpiaba también al reanudar tras una pausa.
         self.transcriber.apply_settings(
             model_size=model, language=language, extra_context=context
         )
-        self.transcriber.reset_context()
         short = (model or "").split("/")[-1]
-        self.lbl_active_pill.setText(f"{short} - {language.upper()}")
+        self.lbl_active_pill.setText(f"{short} · {language.upper()}")
+        if not self._loading_settings:
+            self._save_settings()
+
+    # ---------- Ajustes persistentes y atajos ----------
+    def _setup_shortcuts(self):
+        QShortcut(QKeySequence.StandardKey.Save, self, activated=self.save_meeting_txt)
+        QShortcut(QKeySequence("Ctrl+Return"), self, activated=self.toggle_listening)
+        QShortcut(QKeySequence("Ctrl+Shift+P"), self, activated=self._shortcut_pause)
+        QShortcut(QKeySequence("Ctrl+Shift+L"), self, activated=self.toggle_overlay)
+        QShortcut(QKeySequence.StandardKey.Find, self, activated=self._focus_search)
+        self.btn_start.setToolTip("Iniciar / detener la escucha (Cmd+Enter)")
+        self.btn_pause.setToolTip("Pausar / reanudar (Cmd+Shift+P)")
+
+    def _shortcut_pause(self):
+        if self.btn_pause.isEnabled():
+            self.toggle_pause()
+
+    def _focus_search(self):
+        self.edit_search.setFocus()
+        self.edit_search.selectAll()
+
+    @staticmethod
+    def _select_combo(combo, data):
+        index = combo.findData(data)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+
+    def _load_settings(self):
+        q = self.qsettings
+        self._loading_settings = True
+        try:
+            self._select_combo(self.combo_source, q.value("source", "system"))
+            self._select_combo(self.combo_model, q.value("model", DEFAULT_MODEL))
+            self._select_combo(self.combo_lang, q.value("language", "en"))
+            self._select_combo(self.combo_summary_lang, q.value("summary_lang", "es"))
+            self.edit_context.setText(str(q.value("context", "")))
+            self.edit_alerts.setText(str(q.value("alerts", "")))
+            try:
+                self.slider_sens.setValue(int(q.value("sensitivity", 35)))
+            except (TypeError, ValueError):
+                pass
+            self.chk_alert_sound.setChecked(q.value("alert_sound", True, type=bool))
+            self.chk_enhance.setChecked(q.value("enhance", False, type=bool))
+            self.chk_autoscroll.setChecked(q.value("autoscroll", True, type=bool))
+            settings_visible = q.value("settings_visible", True, type=bool)
+            self.settings_group.setVisible(settings_visible)
+            self.btn_toggle_settings.setText("Ajustes ▴" if settings_visible else "Ajustes ▾")
+            geometry = q.value("geometry")
+            if geometry:
+                self.restoreGeometry(geometry)
+        finally:
+            self._loading_settings = False
+        self.on_settings_changed()
+
+    def _save_settings(self):
+        q = self.qsettings
+        q.setValue("source", self.combo_source.currentData())
+        q.setValue("model", self.combo_model.currentData())
+        q.setValue("language", self.combo_lang.currentData())
+        q.setValue("summary_lang", self.combo_summary_lang.currentData())
+        q.setValue("context", self.edit_context.text())
+        q.setValue("alerts", self.edit_alerts.text())
+        q.setValue("sensitivity", self.slider_sens.value())
+        q.setValue("alert_sound", self.chk_alert_sound.isChecked())
+        q.setValue("enhance", self.chk_enhance.isChecked())
+        q.setValue("autoscroll", self.chk_autoscroll.isChecked())
+        q.setValue("settings_visible", self.settings_group.isVisible())
+        q.setValue("geometry", self.saveGeometry())
+
+    def _on_overlay_closed(self):
+        self._is_pip_mode = False
+        self.btn_pip.setText("Subtítulos")
 
     def on_sensitivity_changed(self, value):
         threshold = value / 10000.0
@@ -868,9 +993,7 @@ class VoiceLoggerWindow(QMainWindow):
             f"[{entry['timestamp']}] {entry['text']}" for entry in self.all_entries
         )
         if not text.strip():
-            QMessageBox.information(
-                self, "Sin contenido", "No hay transcripcion para resumir todavia."
-            )
+            self.toast.show_message("No hay transcripción para resumir todavía.", "info")
             return
         language = self.combo_summary_lang.currentData() or "es"
         self.btn_summary.setEnabled(False)
@@ -916,7 +1039,7 @@ class VoiceLoggerWindow(QMainWindow):
                 self.show_alert(matched)
 
     def show_alert(self, matched):
-        self.alert_toast.show_message(", ".join(matched))
+        self.toast.show_message(", ".join(matched), "alert")
         if self.chk_alert_sound.isChecked():
             QApplication.beep()
 
@@ -1050,12 +1173,9 @@ class VoiceLoggerWindow(QMainWindow):
             and not query
         ):
             previous = self.all_entries[-1]
+            # Se une el texto tal cual: bajar a minúscula la primera letra
+            # rompía nombres propios y siglas ("UPTC" -> "uPTC", "Julian" -> "julian").
             new_chunk = entry["text"].strip()
-            if not previous["text"].endswith((".", "!", "?")) and len(new_chunk) > 1:
-                if new_chunk[0].isupper() and not new_chunk.startswith(
-                    ("I ", "I'", "OK", "API", "SQL", "BI", "DingTalk")
-                ):
-                    new_chunk = new_chunk[0].lower() + new_chunk[1:]
             previous["text"] = f"{previous['text']} {new_chunk}".strip()
             target = previous
             merged = True
@@ -1066,17 +1186,27 @@ class VoiceLoggerWindow(QMainWindow):
         self._apply_alerts(target)
 
         if merged:
+            # Debounce: antes se reconstruía todo el transcript en cada fusión.
+            self.search_timer.start()
+        elif self._rendered_count >= self.VIEW_LIMIT * 2:
             self._do_search_filter()
-        else:
-            if not query or query in target["text"].lower():
-                self.render_entry(target, search_query=query)
+        elif not query or query in target["text"].lower():
+            self.render_entry(target, search_query=query)
 
-        self.lbl_phrase_count.setText(f"Bloques: {len(self.all_entries)}")
+        self._update_stats()
         self.lbl_file_info.setText(
             f"Guardado en: {os.path.basename(self.logger.get_current_txt_path())}"
         )
         if self.overlay.isVisible():
             self.overlay.set_entries(list(self.all_entries))
+
+    VIEW_LIMIT = 400
+
+    def _update_stats(self):
+        words = sum(len(e["text"].split()) for e in self.all_entries)
+        self.lbl_phrase_count.setText(
+            f"{len(self.all_entries)} bloques · {words} palabras"
+        )
 
     def render_entry(self, entry, search_query=None):
         timestamp = entry["timestamp"]
@@ -1099,49 +1229,59 @@ class VoiceLoggerWindow(QMainWindow):
         else:
             highlighted = escaped
 
-        badge_bg = {
-            "EN": "linear-gradient(135deg, #0284c7, #2563eb)",
-            "ES": "linear-gradient(135deg, #059669, #10b981)",
-            "PT": "linear-gradient(135deg, #7c3aed, #9333ea)",
-        }.get(lang, "linear-gradient(135deg, #475569, #64748b)")
         accent = {"EN": "#38bdf8", "ES": "#10b981", "PT": "#c084fc"}.get(lang, "#64748b")
+        card_bg = "#13131c"
+        alert_badge = ""
         if entry.get("alert"):
             accent = "#ef4444"
+            card_bg = "#241216"
             alert_badge = (
-                '<span style="background: linear-gradient(135deg, #b91c1c, #ef4444); '
-                'color: #ffffff; padding: 2px 7px; border-radius: 4px; '
-                f'font-size: {badge_size}px; font-weight: 800; letter-spacing: 0.5px; '
-                'margin-left: 6px;">ALERTA</span>'
+                f'&nbsp;<span style="background-color: #ef4444; color: #ffffff; '
+                f'font-size: {badge_size}px; font-weight: 800;">&nbsp;ALERTA&nbsp;</span>'
             )
-        else:
-            alert_badge = ""
 
+        # Qt solo soporta un subconjunto de HTML/CSS: las tarjetas se montan con
+        # <table> (barra de acento + celda de contenido) en vez de border-radius
+        # o linear-gradient, que se ignoraban.
         self.text_transcript.append(
-            f"""
-        <div style="margin-bottom: 8px; padding: 9px 13px; background-color: #13131c; border: 1px solid #232334; border-left: 3px solid {accent}; border-radius: 8px;">
-            <div style="margin-bottom: 4px;">
-                <span style="color: #06b6d4; font-family: Menlo, monospace; font-size: {timestamp_size}px; font-weight: bold; margin-right: 8px;">[{timestamp}]</span>
-                <span style="background: {badge_bg}; color: #ffffff; padding: 2px 7px; border-radius: 4px; font-size: {badge_size}px; font-weight: 800; letter-spacing: 0.5px;">{lang}</span>
-                {alert_badge}
-            </div>
-            <div style="color: #f1f5f9; font-size: {text_size}px; line-height: 1.6; font-family: -apple-system, sans-serif;">
-                {highlighted}
-            </div>
-        </div>
-        """
+            f'<table width="100%" cellspacing="0" cellpadding="0"><tr>'
+            f'<td width="4" bgcolor="{accent}"></td>'
+            f'<td bgcolor="{card_bg}" style="padding: 8px 14px;">'
+            f'<span style="color: #64748b; font-family: Menlo, monospace; '
+            f'font-size: {timestamp_size}px;">{timestamp}</span>'
+            f'&nbsp;&nbsp;<span style="color: {accent}; font-size: {badge_size}px; '
+            f'font-weight: 800;">{lang}</span>{alert_badge}<br>'
+            f'<span style="color: #f1f5f9; font-size: {text_size}px;">{highlighted}</span>'
+            f"</td></tr></table>"
+            f'<p style="margin: 0; font-size: 4px;">&nbsp;</p>'
         )
+        self._rendered_count += 1
         if self.chk_autoscroll.isChecked():
-            cursor = self.text_transcript.textCursor()
-            cursor.movePosition(cursor.MoveOperation.End)
-            self.text_transcript.setTextCursor(cursor)
+            bar = self.text_transcript.verticalScrollBar()
+            bar.setValue(bar.maximum())
 
     @Slot()
     def _do_search_filter(self):
         query = self.edit_search.text().strip().lower()
-        self.text_transcript.clear()
-        for entry in self.all_entries:
-            if not query or query in entry["text"].lower():
+        matches = [
+            entry for entry in self.all_entries
+            if not query or query in entry["text"].lower()
+        ]
+        hidden = max(0, len(matches) - self.VIEW_LIMIT)
+        self.text_transcript.setUpdatesEnabled(False)
+        try:
+            self.text_transcript.clear()
+            self._rendered_count = 0
+            if hidden:
+                self.text_transcript.append(
+                    f'<p align="center" style="color: #64748b; font-size: 12px;">'
+                    f"… {hidden} bloques anteriores ocultos en la vista "
+                    f"(siguen incluidos al guardar, copiar y resumir) …</p>"
+                )
+            for entry in matches[-self.VIEW_LIMIT:]:
                 self.render_entry(entry, search_query=query)
+        finally:
+            self.text_transcript.setUpdatesEnabled(True)
 
     def copy_transcript(self):
         lines = [
@@ -1149,15 +1289,11 @@ class VoiceLoggerWindow(QMainWindow):
             for entry in self.all_entries
         ]
         QApplication.clipboard().setText("\n".join(lines))
-        original = self.btn_copy.text()
-        self.btn_copy.setText(f"Copiados {len(lines)} bloques")
-        QTimer.singleShot(1600, lambda: self.btn_copy.setText(original))
+        self.toast.show_message(f"Copiados {len(lines)} bloques al portapapeles", "info")
 
     def save_meeting_txt(self):
         if not self.all_entries:
-            QMessageBox.information(
-                self, "Sin contenido", "Todavia no hay transcripcion para guardar."
-            )
+            self.toast.show_message("Todavía no hay transcripción para guardar.", "info")
             return
 
         desktop = os.path.join(os.path.expanduser("~"), "Desktop")
@@ -1166,7 +1302,7 @@ class VoiceLoggerWindow(QMainWindow):
         default_path = os.path.join(default_dir, f"reunion_{stamp}.txt")
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Guardar transcripcion de la reunion",
+            "Guardar transcripción de la reunión",
             default_path,
             "Texto (*.txt)",
         )
@@ -1180,17 +1316,18 @@ class VoiceLoggerWindow(QMainWindow):
         source = (
             "Audio del sistema"
             if self.combo_source.currentData() == "system"
-            else "Microfono"
+            else "Micrófono"
         )
 
         lines = [
             "=" * 60,
-            "VOICE LOGGER MAC - TRANSCRIPCION DE REUNION",
+            "VOICE LOGGER MAC - TRANSCRIPCIÓN DE REUNIÓN",
             "=" * 60,
             f"Guardado: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            f"Duracion de la sesion: {self.lbl_timer.text()}",
+            f"Duración de la sesión: {self.lbl_timer.text()}",
             f"Modelo: {model} | Idioma: {language} | Fuente: {source}",
-            f"Bloques: {len(self.all_entries)}",
+            f"Bloques: {len(self.all_entries)} | Palabras: "
+            f"{sum(len(e['text'].split()) for e in self.all_entries)}",
             "=" * 60,
             "",
         ]
@@ -1207,14 +1344,13 @@ class VoiceLoggerWindow(QMainWindow):
             QMessageBox.critical(self, "No se pudo guardar", str(exc))
             return
 
-        QMessageBox.information(
-            self, "Reunion guardada", f"Archivo guardado en:\n{path}"
-        )
+        self.toast.show_message(f"Reunión guardada en {os.path.basename(path)}", "info")
 
     def clear_display(self):
         self.text_transcript.clear()
         self.all_entries.clear()
-        self.lbl_phrase_count.setText("Bloques: 0")
+        self._rendered_count = 0
+        self._update_stats()
         self.transcriber.reset_context()
         if self.overlay.isVisible():
             self.overlay.set_entries([])
@@ -1236,6 +1372,10 @@ class VoiceLoggerWindow(QMainWindow):
         self.lbl_status_badge.setText("● Error")
         self._set_badge_style("#ef4444")
         self.lbl_status_badge.setToolTip(message)
+        now = time.time()
+        if now - self._last_error_toast_at >= 5.0:
+            self._last_error_toast_at = now
+            self.toast.show_message((message.splitlines() or [""])[0][:160], "error", 5000)
 
     @Slot(str)
     def on_source_error(self, message):
@@ -1419,6 +1559,13 @@ class VoiceLoggerWindow(QMainWindow):
                 margin-bottom: -5px;
                 border-radius: 7px;
             }
+            QToolTip {
+                background-color: #171722;
+                color: #e2e8f0;
+                border: 1px solid #2e2e42;
+                padding: 4px 8px;
+            }
+            QPushButton:focus { outline: none; }
             QCheckBox { color: #cbd5e1; }
             QCheckBox::indicator {
                 width: 15px;
@@ -1441,12 +1588,15 @@ class VoiceLoggerWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.stop_listening()
+        self._save_settings()
         if self.worker.isRunning():
             self.worker.stop()
         if self._summary_worker and self._summary_worker.isRunning():
-            self._summary_worker.wait(1500)
+            if not self._summary_worker.wait(3000):
+                self._summary_worker.terminate()
+                self._summary_worker.wait(1000)
         self.overlay.close()
-        self.alert_toast.close()
+        self.toast.close()
         if hasattr(self, "tray_icon"):
             self.tray_icon.hide()
         event.accept()
@@ -1457,6 +1607,7 @@ def run_app():
     app = QApplication(sys.argv)
     app.setApplicationName("VoiceLogger Mac")
     app.setApplicationDisplayName("VoiceLogger Mac")
+    app.setStyle("Fusion")  # render consistente con las hojas de estilo oscuras
     app.setQuitOnLastWindowClosed(True)
     window = VoiceLoggerWindow()
     window.show()

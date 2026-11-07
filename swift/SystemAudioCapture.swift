@@ -41,8 +41,12 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         }
 
         guard let display = content.displays.first else {
+            // Antes hacía `return` y el proceso se quedaba vivo sin capturar nada.
             logError("NO_DISPLAY_FOUND")
-            return
+            throw NSError(
+                domain: "VoiceLogger", code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "No se encontró ninguna pantalla para capturar"]
+            )
         }
 
         let filter = SCContentFilter(display: display, excludingWindows: [])
@@ -92,7 +96,13 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
             guard let data = buffer.mData else { continue }
             let byteCount = Int(buffer.mDataByteSize)
             if byteCount > 0 {
-                stdoutHandle.write(Data(bytes: data, count: byteCount))
+                // `write(contentsOf:)` lanza un error Swift si el lector se cierra
+                // (EPIPE); `write(_:)` lanzaba una excepción ObjC que mataba el proceso.
+                do {
+                    try stdoutHandle.write(contentsOf: Data(bytes: data, count: byteCount))
+                } catch {
+                    exit(0)
+                }
             }
         }
     }

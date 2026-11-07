@@ -128,6 +128,24 @@ class SystemAudioSource:
                             "Grabación de pantalla y audio del sistema, activa VoiceLogger Mac "
                             "y vuelve a abrir la app."
                         )
+                elif "NO_DISPLAY_FOUND" in line:
+                    if self.on_error and not self._error_reported:
+                        self._error_reported = True
+                        self.on_error(
+                            "No se encontró ninguna pantalla para capturar el audio del sistema.\n\n"
+                            "Conecta o activa una pantalla e inténtalo de nuevo."
+                        )
+                elif "UNSUPPORTED_MACOS" in line:
+                    if self.on_error and not self._error_reported:
+                        self._error_reported = True
+                        self.on_error("La captura de audio del sistema requiere macOS 13 o superior.")
+                elif "STREAM_STOPPED_WITH_ERROR" in line:
+                    if self.on_error and not self._error_reported:
+                        self._error_reported = True
+                        self.on_error(
+                            "macOS detuvo la captura de audio del sistema.\n\n"
+                            f"Detalle: {line.split(':', 1)[-1].strip()}"
+                        )
                 elif "CAPTURE_STARTED" in line:
                     if self.on_status:
                         self.on_status("Escuchando audio del sistema...")

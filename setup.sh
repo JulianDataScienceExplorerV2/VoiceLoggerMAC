@@ -10,7 +10,7 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 if [ ! -d .venv ]; then
-  uv venv --python /opt/homebrew/bin/python3.11 .venv
+  uv venv --python 3.11 .venv
 fi
 
 uv pip install --python .venv/bin/python -r requirements.txt

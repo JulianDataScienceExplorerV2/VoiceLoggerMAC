@@ -12,7 +12,7 @@ Usa **MLX Whisper** en Apple Silicon, captura de audio del sistema con **ScreenC
 - Xcode Command Line Tools: `xcode-select --install`
 - [`uv`](https://docs.astral.sh/uv/getting-started/installation/): `brew install uv`
 - Python 3.11 para el entorno virtual.
-  > `setup.sh` busca Python en `/opt/homebrew/bin/python3.11`. Si tu instalación usa otra ruta, instala `python@3.11` con Homebrew (`brew install python@3.11`) o edita esa línea en `setup.sh`.
+  > `setup.sh` pide Python 3.11 a `uv` (`uv venv --python 3.11`); `uv` lo encuentra o lo descarga automáticamente.
 - Conexión a internet **solo la primera vez**, para descargar dependencias y modelos.
 
 ## Instalación
@@ -134,11 +134,49 @@ Compara velocidad/RAM de los modelos Whisper con un WAV de prueba:
 .venv/bin/python benchmark.py --audio /tmp/vl_bench.wav
 ```
 
+## Pruebas reales (sin datos personales)
+
+Probado en 2026 en un MacBook Pro con **Apple M3 Pro**, usando **solo audio sintético** (texto a voz de macOS `say`, sin reuniones reales ni datos personales publicados).
+
+**Prueba de precisión sintética** — un clip TTS de 13,0 s con una frase conocida fue transcrito tal cual por el modelo por defecto (`whisper-large-v3-turbo-q4`) en 4,01 s incluyendo la carga del modelo (RTF 0,308). Los logs de uso real (216 bloques en una reunión) **no** se publicaron, solo se contaron.
+
+**Benchmark (`benchmark.py`, WAV sintético)** — sin avisos térmicos antes ni después:
+
+| Modelo | Audio | Cold | Warm | RTF | RAM máx. |
+|---|---|---|---|---|---|
+| Turbo Q4 | 10 s | 1,81 s | 0,72 s | 0,072 | 0,74 GB |
+| Turbo Q4 | 30 s | 1,25 s | 0,79 s | 0,026 | 0,75 GB |
+| Turbo | 10 s | 1,44 s | 0,78 s | 0,077 | 1,72 GB |
+| Turbo | 30 s | 1,10 s | 0,80 s | 0,027 | 1,73 GB |
+
+Las ejecuciones en caliente son ~13–38× más rápidas que el tiempo real, así que la captura en vivo no es el cuello de botella en chips M.
+
+**Pruebas de humo (superadas):** `py_compile` en todos los módulos; el logger escribe TXT/JSONL en un directorio temporal; `PhraseSegmenter` detecta exactamente 1 frase en silencio + ruido sintético.
+
+Reproduce la prueba sintética:
+
+```bash
+say -v Samantha -r 160 -o /tmp/vl_bench.aiff "Hello, this is a synthetic test. Voice Logger Mac transcribes meetings locally, without sending audio to the cloud."
+afconvert -f WAVE -d LEI16@16000 /tmp/vl_bench.aiff /tmp/vl_bench.wav
+.venv/bin/python benchmark.py --audio /tmp/vl_bench.wav --models Turbo-Q4,Turbo
+```
+
+## Proyectos similares y roadmap
+
+Ya existen herramientas similares — por ejemplo **MacWhisper** y **Superwhisper** (comerciales, Whisper local + reuniones), **Buzz** (open source, transcripción de archivos + en vivo) y apps locales open source como **Meetily**, **Tacet** y **MeetScribe** (ScreenCaptureKit + Whisper). El nicho de VoiceLoggerMac es una app ligera, 100% local, en PySide6, con subtítulos PiP en vivo, alertas por palabras clave y resumen local con Qwen.
+
+Mejoras planificadas:
+
+- Etiquetas de hablante (sistema = ellos, micrófono = tú) y diarización opcional
+- Exportar a subtítulos SRT/VTT e importar/transcribir archivos de audio
+- Resúmenes por bloques para reuniones largas (hoy el resumidor trunca a 6.000 caracteres)
+- Detección automática de inicio de reunión, búsqueda de texto completo en todas las sesiones, tests automatizados/CI
+
 ## Problemas frecuentes
 
 - **"No se encontró el capturador de audio"** → ejecuta `./setup.sh` para compilar `.build/system_audio_capture`.
 - **macOS bloquea la captura** → revisa los permisos de la sección anterior y reinicia la app.
 - **La primera transcripción tarda mucho** → está descargando el modelo de Whisper. Es normal, solo pasa una vez por modelo.
 - **Error con el resumen (`mlx_lm` no instalado)** → reinstala dependencias: `uv pip install --python .venv/bin/python -r requirements.txt` (incluye `mlx-lm`).
-- **Error de ruta de Python en `setup.sh`** → comprueba que existe `/opt/homebrew/bin/python3.11` o ajusta la ruta.
+- **Error de Python en `setup.sh`** → ejecuta `uv python install 3.11` y vuelve a intentarlo.
 - **No detecta la voz / entra ruido** → sube/baja la sensibilidad (VAD) en la GUI y prueba el filtro "Claridad de voz" con micrófono.
