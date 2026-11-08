@@ -129,8 +129,9 @@ final class AppState: ObservableObject {
 
     /// Transcript sent whole to Qwen while it fits in one pass (~3-4k tokens).
     static let singlePassChars = 12000
-    /// Most recent part of the transcript sent with each question.
-    static let questionChars = 24000
+    /// Most recent part of the transcript sent with each question (the live
+    /// notes cover the rest). Kept small: big prompts are slow and spike memory.
+    static let questionChars = 12000
     private var isLoading = false
 
     init() {
@@ -445,6 +446,9 @@ final class AppState: ObservableObject {
     /// so Qwen is busy at most a fraction of the time.
     private func maybeAutoSummarize() {
         guard autoSummary, !isSummarizing, hasUnsummarizedText else { return }
+        // A question waiting for its answer goes first: Qwen handles one
+        // request at a time and the user is looking at the screen.
+        guard !qaItems.contains(where: { $0.answer == nil }) else { return }
         if liveMarkdown.isEmpty, entries.reduce(0, { $0 + $1.text.count }) < 150 { return }
         if let last = lastSummaryAt, Date().timeIntervalSince(last) < Double(liveInterval) { return }
         refreshSummary()
@@ -519,8 +523,15 @@ final class AppState: ObservableObject {
     }
 
     /// Asks Qwen about the meeting (typed question or a detected key question).
+    /// True while that question is waiting for Qwen's answer.
+    func isAnswering(_ question: String) -> Bool {
+        qaItems.contains { $0.question == question && $0.answer == nil }
+    }
+
     @discardableResult
     func ask(_ question: String) -> Bool {
+        // Double clicks would queue the same heavy request twice.
+        guard !isAnswering(question) else { return false }
         let text = transcriptForAI()
         guard !text.isEmpty else {
             toast("Todavía no hay transcripción sobre la que preguntar.")
@@ -535,11 +546,12 @@ final class AppState: ObservableObject {
         qaRevision += 1
         let lang = summaryLang
         let context = String(text.suffix(Self.questionChars))
+        let notes = liveMarkdown
         Task {
             let answer: String
             let failed: Bool
             do {
-                answer = try await server.ask(question: question, text: context, lang: lang)
+                answer = try await server.ask(question: question, text: context, notes: notes, lang: lang)
                 failed = false
             } catch {
                 answer = error.localizedDescription
@@ -1508,6 +1520,8 @@ struct FullView: View {
                         }
                     }
                 }
+                // Answers always keep some room, even with several detected questions.
+                .frame(minHeight: 90)
                 HStack(spacing: 8) {
                     TextField("Pregunta algo sobre la reunión…", text: $state.qaQuestion)
                         .textFieldStyle(.plain)
@@ -1536,7 +1550,8 @@ struct FullView: View {
             Text("DETECTADAS EN EL AUDIO")
                 .scaledFont(10, weight: .bold)
                 .foregroundStyle(.secondary)
-            ForEach(Array(state.keyQuestions.enumerated()), id: \.offset) { item in
+            ForEach(Array(state.keyQuestions.prefix(5).enumerated()), id: \.offset) { item in
+                let answering = state.isAnswering(item.element)
                 Button {
                     state.ask(item.element)
                 } label: {
@@ -1545,15 +1560,22 @@ struct FullView: View {
                             .foregroundStyle(Theme.qa)
                         Text(MarkdownText.inline(item.element))
                             .font(.system(size: CGFloat(max(12, state.transcriptFontSize - 2))))
+                            .lineLimit(2)
                             .multilineTextAlignment(.leading)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                        Image(systemName: "arrow.right.circle")
-                            .foregroundStyle(.secondary)
+                        if answering {
+                            ProgressView().controlSize(.small)
+                            Text("Respondiendo…").scaledFont(11).foregroundStyle(Theme.qa)
+                        } else {
+                            Image(systemName: "arrow.right.circle")
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("Pedir a la IA que la responda con lo dicho en la reunión")
+                .disabled(answering)
+                .help("Pedir a la IA que la responda con lo dicho en la reunión (la respuesta sale abajo)")
             }
         }
         .padding(12)

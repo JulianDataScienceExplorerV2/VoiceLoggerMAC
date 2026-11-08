@@ -88,8 +88,11 @@ actor QwenServer {
         return try JSONDecoder().decode(Envelope<LiveInsights>.self, from: data).result
     }
 
-    func ask(question: String, text: String, lang: String) async throws -> String {
-        let data = try await send(["type": "ask", "question": question, "text": text, "lang": lang])
+    /// `notes` (the live summary) covers what no longer fits in `text`.
+    func ask(question: String, text: String, notes: String, lang: String) async throws -> String {
+        let data = try await send([
+            "type": "ask", "question": question, "text": text, "notes": notes, "lang": lang,
+        ])
         return try JSONDecoder().decode(Envelope<Answer>.self, from: data).result.answer
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -146,7 +149,10 @@ actor QwenServer {
         process.standardError = try FileHandle(forWritingTo: logURL)
 
         let buffer = LineBuffer()
-        stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+        // Both callbacks run on background threads. They are explicitly
+        // @Sendable so Swift 6 never treats them as isolated to this actor
+        // (that would crash the whole app, e.g. when Python exits).
+        stdoutPipe.fileHandleForReading.readabilityHandler = { @Sendable [weak self] handle in
             let chunk = handle.availableData
             guard !chunk.isEmpty else {
                 handle.readabilityHandler = nil
@@ -156,7 +162,7 @@ actor QwenServer {
                 Task { await self?.deliver(line) }
             }
         }
-        process.terminationHandler = { [weak self] finished in
+        process.terminationHandler = { @Sendable [weak self] finished in
             let token = ObjectIdentifier(finished)
             let status = finished.terminationStatus
             Task { await self?.processEnded(token: token, status: status) }

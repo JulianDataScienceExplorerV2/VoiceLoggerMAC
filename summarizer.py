@@ -27,8 +27,10 @@ SUMMARY_MODEL = os.environ.get("VOICELOGGER_QWEN_MODEL") or "mlx-community/Qwen2
 SINGLE_PASS_CHARS = 12000
 CHUNK_CHARS = 8000
 MAX_NOTES_CHARS = 9000
-# Preguntas: se manda la parte más reciente de la reunión (~6-8k tokens).
-QA_MAX_CHARS = 24000
+# Preguntas: notas del resumen en vivo + la parte más reciente de la reunión.
+# Antes eran 24k caracteres de transcripción: el doble de prompt que el
+# resumen, más lento y con picos de memoria/GPU (sobre todo con modelos 4B).
+QA_MAX_CHARS = 12000
 MAX_KEY_QUESTIONS = 6
 
 # Persona/contexto para Qwen. Se lee en cada petición: basta con editar y
@@ -87,6 +89,12 @@ PROMPTS = {
             "Answer concisely and usefully. If the answer is not in the transcript, "
             "say so clearly instead of making it up."
         ),
+        "ask_notes": (
+            "Notes of the meeting so far:\n{notes}\n\n"
+            "Most recent part of the transcript:\n{text}\n\nQuestion: {question}\n"
+            "Answer concisely and usefully using the notes and the transcript. If the answer "
+            "is not there, say so clearly instead of making it up."
+        ),
         "trimmed": "(… transcript trimmed: only the most recent part …)",
     },
     "es": {
@@ -125,6 +133,12 @@ PROMPTS = {
             "Transcripción de la reunión:\n{text}\n\nPregunta: {question}\n"
             "Responde de forma concisa y útil. Si la respuesta no aparece en la "
             "transcripción, dilo claramente en vez de inventarla."
+        ),
+        "ask_notes": (
+            "Notas de la reunión hasta ahora:\n{notes}\n\n"
+            "Parte más reciente de la transcripción:\n{text}\n\nPregunta: {question}\n"
+            "Responde de forma concisa y útil usando las notas y la transcripción. Si la "
+            "respuesta no aparece, dilo claramente en vez de inventarla."
         ),
         "trimmed": "(… transcripción recortada: solo la parte más reciente …)",
     },
@@ -397,25 +411,29 @@ def live_insights(text="", new_text="", previous="", language="en"):
 
 # ---------- Preguntas ----------
 
-def _ask_blocking(text, question, language):
-    user = _prompts(language)["ask"].format(text=text, question=question)
+def _ask_blocking(text, question, language, notes=""):
+    prompts = _prompts(language)
+    if notes.strip():
+        user = prompts["ask_notes"].format(notes=notes.strip(), text=text, question=question)
+    else:
+        user = prompts["ask"].format(text=text, question=question)
     return _generate(_system_prompt(language), user, max_tokens=400, temp=0.2)
 
 
-def _run_question(text, question, language):
+def _run_question(text, question, language, notes=""):
     _ensure_model()
-    return _ask_blocking(text, question, language)
+    return _ask_blocking(text, question, language, notes)
 
 
-def ask_question(text, question, language="es"):
-    """Responde una pregunta sobre la transcripción. Lanza excepción si falla.
+def ask_question(text, question, language="es", notes=""):
+    """Responde una pregunta sobre la reunión. Lanza excepción si falla.
 
-    Pasa por el mismo hilo que el resumen (MLX asocia sus streams al hilo
-    que cargó el modelo) y recorta reuniones muy largas para no exceder el
-    contexto del modelo.
+    ``notes`` (el resumen en vivo) cubre lo que ya no cabe de la transcripción,
+    que se recorta a su parte más reciente. Pasa por el mismo hilo que el
+    resumen (MLX asocia sus streams al hilo que cargó el modelo).
     """
     text = _tail_text((text or "").strip(), QA_MAX_CHARS, language)
-    return _executor.submit(_run_question, text, question, language).result()
+    return _executor.submit(_run_question, text, question, language, notes or "").result()
 
 
 # ---------- Proceso persistente para la app nativa ----------
@@ -437,7 +455,7 @@ def handle_request(request):
             raise ValueError("empty question")
         if not text.strip():
             raise ValueError("no transcript to answer from yet")
-        return {"answer": ask_question(text, question, language)}
+        return {"answer": ask_question(text, question, language, request.get("notes") or "")}
     if kind == "summary":
         result, error = build_summary(request.get("text", ""), language)
         if error:

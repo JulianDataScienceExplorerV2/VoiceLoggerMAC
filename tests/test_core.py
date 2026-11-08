@@ -224,6 +224,27 @@ class ThinkingModelTests(unittest.TestCase):
         self.assertIs(captured["enable_thinking"], False)
 
 
+class AskWithNotesTests(unittest.TestCase):
+    def test_notes_go_into_the_prompt(self):
+        with mock.patch.object(summarizer, "_generate", return_value="ok") as fake, \
+                mock.patch.object(summarizer, "load_context", return_value=""):
+            summarizer._ask_blocking("[10:00] hi", "Who owns it?", "en", notes="## Summary\nQ3 review")
+        user_prompt = fake.call_args[0][1]
+        self.assertIn("Notes of the meeting so far:\n## Summary\nQ3 review", user_prompt)
+        self.assertIn("Most recent part of the transcript:\n[10:00] hi", user_prompt)
+
+    def test_without_notes_uses_plain_prompt(self):
+        with mock.patch.object(summarizer, "_generate", return_value="ok") as fake, \
+                mock.patch.object(summarizer, "load_context", return_value=""):
+            summarizer._ask_blocking("[10:00] hi", "Who?", "en")
+        self.assertTrue(fake.call_args[0][1].startswith("Meeting transcript:"))
+
+    def test_serve_forwards_notes(self):
+        with mock.patch.object(summarizer, "ask_question", return_value="42") as fake:
+            summarizer.handle_request({"type": "ask", "text": "t", "question": "q", "lang": "en", "notes": "n"})
+        fake.assert_called_once_with("t", "q", "en", "n")
+
+
 class ServeTests(unittest.TestCase):
     def _serve(self, *lines):
         out = io.StringIO()
