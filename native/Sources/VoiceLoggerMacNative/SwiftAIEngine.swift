@@ -198,7 +198,7 @@ actor SwiftAIEngine: AIEngine {
             let notes = await head(AIText.dedupeLines(previous), Self.liveNotesTokens)
             let new = await tail(newText, Self.liveNewTokens)
             let user = AIText.fill(prompts.update, ["previous": notes, "new": new]) + prompts.sections
-            return try await llm.generate(system: systemPrompt(prompts), user: user, maxTokens: 700)
+            return try await llm.generate(system: systemPrompt(prompts), user: user, maxTokens: 700, priority: .background)
         }
         let recent = await tail(newText, Self.liveTextTokens)
         return try await summarize(recent, prompts: prompts)
@@ -211,7 +211,9 @@ actor SwiftAIEngine: AIEngine {
     private func summarize(_ text: String, prompts: AIPrompts) async throws -> String {
         let system = systemPrompt(prompts)
         if text.count <= AIText.singlePassChars {
-            return try await llm.generate(system: system, user: minutesPrompt(text, prompts), maxTokens: 700)
+            return try await llm.generate(
+                system: system, user: minutesPrompt(text, prompts), maxTokens: 700, priority: .background
+            )
         }
         // Long meeting: notes per chunk and final notes from them, so the end
         // of the meeting (decisions, to-dos) is never lost.
@@ -219,14 +221,16 @@ actor SwiftAIEngine: AIEngine {
         for (offset, chunk) in AIText.splitText(text).enumerated() {
             let index = String(offset + 1)
             let note = try await llm.generate(
-                system: system, user: AIText.fill(prompts.chunk, ["index": index, "chunk": chunk]), maxTokens: 400
+                system: system, user: AIText.fill(prompts.chunk, ["index": index, "chunk": chunk]), maxTokens: 400,
+                priority: .background
             )
             notes.append("\(prompts.part) \(index):\n\(note)")
         }
         var joined = notes.joined(separator: "\n\n")
         if joined.count > AIText.maxNotesChars { joined = String(joined.suffix(AIText.maxNotesChars)) }
         return try await llm.generate(
-            system: system, user: minutesPrompt(prompts.consolidated + "\n" + joined, prompts), maxTokens: 700
+            system: system, user: minutesPrompt(prompts.consolidated + "\n" + joined, prompts), maxTokens: 700,
+            priority: .background
         )
     }
 
@@ -461,7 +465,7 @@ actor SwiftAIEngine: AIEngine {
         blocks.append(AIText.fill(prompts.questions, ["limit": String(AIText.questionsMax)]))
         let raw = try await llm.generate(
             system: systemPrompt(prompts), user: blocks.joined(separator: "\n\n"),
-            maxTokens: Self.questionsMaxTokens, temperature: 0.2
+            maxTokens: Self.questionsMaxTokens, temperature: 0.2, priority: .background
         )
         return AIText.parseQuestions(raw)
     }

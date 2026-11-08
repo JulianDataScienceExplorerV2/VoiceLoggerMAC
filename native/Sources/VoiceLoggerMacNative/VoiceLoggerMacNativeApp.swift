@@ -895,17 +895,21 @@ final class AppState: ObservableObject {
         let started = Date()
         Task {
             let found: [String]?
+            var yielded = false
             do {
                 found = try await server.questions(text: recent, known: known, lang: lang)
                 SessionLog.shared.log(
                     "IA", "preguntas en vivo: \(found?.count ?? 0) nuevas en \(SessionLog.seconds(Date().timeIntervalSince(started)))"
                 )
+            } catch is AIPreempted {
+                found = nil
+                yielded = true  // gave way to a question of the user: again as soon as it is answered
             } catch {
                 found = nil
                 SessionLog.shared.log("ERROR", "preguntas en vivo: \(error.localizedDescription)")
             }
             self.isFindingQuestions = false
-            self.lastQuestionsAt = Date()
+            self.lastQuestionsAt = yielded ? nil : Date()
             guard generation == self.aiGeneration, let found else { return }  // errors: retried next time
             self.questionsMark = mark
             self.addLiveQuestions(found)
@@ -977,6 +981,8 @@ final class AppState: ObservableObject {
                     "IA", "resumen \(kind) en \(SessionLog.seconds(Date().timeIntervalSince(started))) · "
                         + "\(insights.questions.count) preguntas · \(insights.actionItems.count) tareas"
                 )
+            case .failure(let error) where error is AIPreempted:
+                SessionLog.shared.log("IA", "resumen \(kind): cedió el turno a tu pregunta, se repite después")
             case .failure(let error):
                 SessionLog.shared.log("ERROR", "resumen \(kind): \(error.localizedDescription)")
             }
@@ -999,6 +1005,11 @@ final class AppState: ObservableObject {
                 self.actionItems = insights.actionItems
                 self.summarizedText = full
                 self.summaryUpdatedAt = Self.clock()
+            case .failure(let error) where error is AIPreempted:
+                // Not an error: it gave way to a question of the user and is
+                // repeated as soon as that answer is done.
+                self.hasUnsummarizedText = true
+                self.lastSummaryAt = nil
             case .failure(let error):
                 self.summaryError = error.localizedDescription
                 self.hasUnsummarizedText = true

@@ -9,6 +9,19 @@ import Tokenizers
 /// Text so far of an answer being written (to show it while it is generated).
 typealias PartialText = @Sendable (String) -> Void
 
+/// Who is waiting for an answer: the user (questions, web complements,
+/// tasks) or the app on its own (live summary, live questions).
+enum AIPriority: Sendable {
+    case user
+    case background
+}
+
+/// A background generation (live summary or questions) stopped so a question
+/// of the user could go first. The app repeats it right after, silently.
+struct AIPreempted: LocalizedError {
+    var errorDescription: String? { "Cedió el turno a una pregunta tuya; se repite enseguida." }
+}
+
 /// Runs the language model inside the app with MLX Swift (no Python).
 ///
 /// Same MLX 4-bit weights and the same Hugging Face cache as the Python
@@ -71,10 +84,15 @@ actor LocalLLM {
     /// An optimized generation failed: plain generation (no helper or 8-bit
     /// cache) until the model changes or is unloaded.
     private var safeMode = false
-    /// One generation at a time, in arrival order (like the single model
-    /// thread of summarizer.py): the GPU is never shared by two answers.
+    /// One generation at a time (like the single model thread of
+    /// summarizer.py): the GPU is never shared by two answers. The user's
+    /// requests go first; a background one that is running when the user asks
+    /// stops at the next token and is repeated later.
     private var isGenerating = false
-    private var waiting: [CheckedContinuation<Void, Never>] = []
+    private var running: AIPriority?
+    private var preemptRequested = false
+    private var waitingUser: [CheckedContinuation<Void, Never>] = []
+    private var waitingBackground: [CheckedContinuation<Void, Never>] = []
 
     init(modelID: String, useDraft: Bool = true) {
         self.modelID = modelID
@@ -170,19 +188,33 @@ actor LocalLLM {
         }
     }
 
-    private func acquire() async {
+    private func acquire(_ priority: AIPriority) async {
         if isGenerating {
-            await withCheckedContinuation { waiting.append($0) }  // the finishing one hands over its turn
+            if priority == .user, running == .background { preemptRequested = true }
+            // The finishing one hands over its turn (see release).
+            await withCheckedContinuation { continuation in
+                if priority == .user {
+                    waitingUser.append(continuation)
+                } else {
+                    waitingBackground.append(continuation)
+                }
+            }
         } else {
             isGenerating = true
         }
+        running = priority
+        preemptRequested = false
     }
 
+    /// The next turn: user requests first, then background ones, each in arrival order.
     private func release() {
-        if waiting.isEmpty {
-            isGenerating = false
+        if !waitingUser.isEmpty {
+            waitingUser.removeFirst().resume()
+        } else if !waitingBackground.isEmpty {
+            waitingBackground.removeFirst().resume()
         } else {
-            waiting.removeFirst().resume()
+            isGenerating = false
+            running = nil
         }
     }
 
@@ -214,9 +246,9 @@ actor LocalLLM {
     /// `partial` receives the text so far while it is written (~10 times a second).
     func generate(
         system: String, user: String, maxTokens: Int, temperature: Float = 0.3, penalizeRepeats: Bool = true,
-        partial: PartialText? = nil
+        priority: AIPriority = .user, partial: PartialText? = nil
     ) async throws -> String {
-        await acquire()
+        await acquire(priority)
         defer { release() }
         let container = try await load()
         defer { Memory.clearCache() }
@@ -233,9 +265,13 @@ actor LocalLLM {
                 let helper = speculative != nil ? "sí" : (shortPrompt ? "no" : "no (prompt largo)")
                 let kv = Self.kvBits.map { "KV \($0) bits desde \(Self.quantizedKVStart)" } ?? "KV normal"
                 let mode = "ayudante \(helper) · \(kv)"
-                return try await stream(session, user: user, container: container, mode: mode, partial: partial)
+                return try await stream(
+                    session, system: system, user: user, container: container, mode: mode, partial: partial
+                )
             } catch is CancellationError {
                 throw CancellationError()
+            } catch let preempted as AIPreempted {
+                throw preempted
             } catch {
                 // Some optimization does not work here: answer the plain way.
                 safeMode = true
@@ -251,17 +287,31 @@ actor LocalLLM {
                 maxTokens: maxTokens, temperature: temperature, penalizeRepeats: penalizeRepeats, quantizeKV: false
             )
         )
-        return try await stream(plain, user: user, container: container, mode: "modo normal", partial: partial)
+        return try await stream(
+            plain, system: system, user: user, container: container, mode: "modo normal", partial: partial
+        )
     }
 
     private func stream(
-        _ session: ChatSession, user: String, container: ModelContainer, mode: String, partial: PartialText?
+        _ session: ChatSession, system: String, user: String, container: ModelContainer, mode: String,
+        partial: PartialText?
     ) async throws -> String {
+        // Prompt size in tokens, to see how fast the prompt is read ("prefill").
+        let promptTokens = await container.encode(system).count + container.encode(user).count
         let started = ContinuousClock.now
         var firstWord: Duration?
         var output = ""
         var lastUpdate = started
         for try await chunk in session.streamResponse(to: user, role: .user) {
+            // A question of the user arrived: a background job stops here (leaving
+            // the loop cancels the generation) and is repeated later.
+            if running == .background, preemptRequested {
+                SessionLog.shared.log(
+                    "IA", "trabajo de fondo cortado a los \(SessionLog.seconds(Self.seconds(ContinuousClock.now - started))) "
+                        + "para atender tu pregunta primero"
+                )
+                throw AIPreempted()
+            }
             if firstWord == nil, !chunk.isEmpty { firstWord = ContinuousClock.now - started }
             output += chunk
             if let partial, ContinuousClock.now - lastUpdate >= Self.partialInterval {
@@ -273,12 +323,15 @@ actor LocalLLM {
         let result = AIText.stripCodeFence(AIText.stripThinking(output))
         partial?(result)
         let tokens = await container.encode(output).count
-        let writing = max(total - Self.seconds(firstWord ?? .zero), 0.001)
+        let firstWordSeconds = Self.seconds(firstWord ?? .zero)
+        let writing = max(total - firstWordSeconds, 0.001)
         SessionLog.shared.log(
-            "IA", String(format: "%ld tokens en %@ (%.0f tok/s escribiendo) · 1.ª palabra %@ · prompt %ld car · %@ · "
-                + "MLX %ld MB (pico %ld MB)",
+            "IA", String(format: "%ld tokens en %@ (%.0f tok/s escribiendo) · 1.ª palabra %@ · prompt %ld car = %ld tokens "
+                + "(leído a %.0f tok/s) · %@ · %@ · MLX %ld MB (pico %ld MB)",
                 tokens, SessionLog.seconds(total), Double(tokens) / writing,
-                SessionLog.seconds(Self.seconds(firstWord ?? .zero)), user.count, mode,
+                SessionLog.seconds(firstWordSeconds), user.count, promptTokens,
+                Double(promptTokens) / max(firstWordSeconds, 0.001), mode,
+                running == .background ? "fondo" : "tuya",
                 Self.megabytes(Memory.activeMemory), Self.megabytes(Memory.peakMemory))
         )
         return result

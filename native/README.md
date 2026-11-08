@@ -278,7 +278,7 @@ los ajustes; después, una línea por evento:
 ```
 10:42:03.120 [WHISPER] 7.8 s de audio en 640 ms (×12 tiempo real) · codificar 180 ms · decodificar 410 ms · reintentos 0 · normal
 10:42:03.125 [BLOQUE] 7.8 s · normal · ok · 21 palabras · listo en 655 ms
-10:42:10.402 [IA] 214 tokens en 4.31 s (58 tok/s escribiendo) · 1.ª palabra 520 ms · prompt 1630 car · ayudante sí · KV 8 bits desde 1024 · …
+10:42:10.402 [IA] 214 tokens en 4.31 s (58 tok/s escribiendo) · 1.ª palabra 520 ms · prompt 1630 car = 410 tokens (leído a 790 tok/s) · ayudante sí · KV normal · tuya · …
 10:42:10.410 [IA] respuesta Ideas (Swift) en 4.40 s · 1187 car · 0 fuentes
 10:42:14.900 [WEB] 6 resultados (3 confiables, 3 páginas leídas) en 2.85 s · dominios: react.dev, …
 10:43:00.001 [MEMORIA] app 5210 MB · 0 bloques esperando a Whisper
@@ -317,6 +317,10 @@ tamaños y conteos, así se puede compartir para depurar.
        | Respuestas y complementos largos (>9k) | 22 tok/s | **38 tok/s** |
 
        Con prompts largos el ayudante también tiene que procesar todo el contexto y acierta menos: ahí va sin él.
+    3. **Tus preguntas primero:** lo que pides tú (respuestas, complementos, «Ampliar con internet», tareas) se
+       adelanta a lo que la app hace sola (resumen y preguntas en vivo). Si uno de esos trabajos de fondo está
+       escribiendo cuando preguntas, se corta en el siguiente token, responde tu pregunta y se repite después,
+       sin mostrar error. (Con el motor Python no se puede cortar a mitad: solo no empieza trabajos nuevos.)
     - La memoria de trabajo (KV) en 8 bits se probó y quedó **apagada**: con prompts de pocos miles de tokens
       ahorra poca memoria y la atención cuantizada probablemente hacía lento el arranque de los prompts largos.
     - La caché del prompt fijo (procesar las instrucciones una sola vez) queda pendiente: `ChatSession.fork` aún no
