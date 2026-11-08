@@ -211,6 +211,20 @@ busca **solo el texto de la pregunta** en DuckDuckGo (o Wikipedia si falla) y Qw
 [1], [2]… con las fuentes como enlaces. La reunión no sale de tu Mac. Se puede quitar en ⚙. Los resultados de un
 modelo pequeño pueden fallar: revisa las fuentes.
 
+### Calidad de la búsqueda (modo Ideas y Ampliar con internet)
+
+- **Sin redes sociales:** la búsqueda va con `-site:pinterest.com -site:facebook.com…` (Instagram, TikTok, X):
+  piden login y no aportan. Si así no sale nada, se repite sin filtros.
+- **Sitios preferidos** (⚙, hasta 3, p. ej. `hbr.org, mckinsey.com, who.int`): se busca en cada uno con
+  `site:` (DuckDuckGo no admite `OR` entre `site:`) y van primero en las fuentes.
+- **Fuentes confiables primero:** de los 8 primeros resultados suben Wikipedia, gobierno (.gov, gob.xx), universidades
+  (.edu, ac.uk), organismos (WHO, ONU, OCDE…), ciencia (Nature, arXiv…), prensa seria y documentación oficial. A Qwen
+  le llegan marcadas «fuente confiable» y, si las fuentes no coinciden, se le pide confiar en esas.
+- **Lee las páginas** (⚙, activado): abre las 2 mejores páginas (solo https públicas, máx. 7 s) y le pasa a Qwen sus
+  párrafos más relacionados con la pregunta (hasta 2000 caracteres por página), sin menús, cabeceras, pies ni scripts;
+  no solo el resumen corto del buscador.
+- En cada fuente se ve su **dominio**, ✓ si es confiable y 🔍 si la IA leyó la página.
+
 ## Tareas → Recordatorios y exportar
 
 - Al pulsar **Detener**, Qwen saca las tareas de la reunión (con responsable y fecha límite si se dijeron) y pregunta

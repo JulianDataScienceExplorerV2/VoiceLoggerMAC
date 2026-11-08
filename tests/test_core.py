@@ -7,6 +7,7 @@ import sys
 import time
 import types
 import unittest
+import urllib.parse
 from unittest import mock
 
 import numpy as np
@@ -454,6 +455,143 @@ class WebSearchTests(unittest.TestCase):
             web_search.search("whisper", fetch=fetch)
 
 
+PAGE_HTML = """<html><head><title>T</title><script>var tracking = "whisper whisper whisper whisper";</script>
+<style>p { color: red }</style></head><body>
+<nav><ul><li>Home</li><li>About Whisper and every other product we sell today online</li></ul></nav>
+<header><p>Subscribe to our newsletter for weekly updates on many different topics</p></header>
+<article>
+<p>Our company was founded many years ago in a small garage with three people.</p>
+<p>Whisper is a speech recognition model trained on 680,000 hours of multilingual audio data.</p>
+<p>It handles accents, background noise and technical language better than older systems.</p>
+<p>Short.</p>
+</article>
+<footer><p>Copyright notice and the cookie policy for this website and its partners</p></footer>
+</body></html>"""
+
+
+class WebSearchQualityTests(unittest.TestCase):
+    """site: (preferidos y exclusiones), fuentes confiables primero y lectura de páginas."""
+
+    def test_parse_sites_accepts_urls_and_operators(self):
+        self.assertEqual(web_search.parse_sites("hbr.org, https://www.McKinsey.com/insights site:who.int hbr.org nada x.org"),
+                         ["hbr.org", "mckinsey.com", "who.int"])  # máximo 3
+        self.assertEqual(web_search.parse_sites(""), [])
+
+    def test_trusted_domains(self):
+        for url in ("https://en.wikipedia.org/wiki/X", "https://www.nasa.gov/a", "https://mit.edu/x",
+                    "https://www.gov.uk/y", "https://www.minsalud.gov.co/z", "https://ox.ac.uk/a", "https://who.int/b",
+                    "https://www.reuters.com/c"):
+            self.assertTrue(web_search.is_trusted(url), url)
+        for url in ("https://randomblog.com/x", "https://abc.go.com/show", "https://fakewikipedia.org/x", ""):
+            self.assertFalse(web_search.is_trusted(url), url)
+
+    def test_queries_exclude_social_sites_and_target_preferred_ones(self):
+        preferred, general = web_search.build_queries("team motivation", ["hbr.org", "mckinsey.com"])
+        self.assertEqual(preferred, ["team motivation site:hbr.org", "team motivation site:mckinsey.com"])
+        self.assertTrue(general.startswith("team motivation -site:pinterest.com"))
+        self.assertEqual(web_search.build_queries("x")[0], [])
+
+    def test_rank_preferred_then_trusted_then_rest(self):
+        results = [{"url": u, "title": u} for u in (
+            "https://blog.example.com/a", "https://www.pinterest.com/pin/1", "https://en.wikipedia.org/wiki/A",
+            "https://hbr.org/2020/x", "https://blog.example.com/a/", "https://other.com/b")]
+        ranked = [r["url"] for r in web_search.rank(results, ["hbr.org"])]
+        self.assertEqual(ranked, ["https://hbr.org/2020/x", "https://en.wikipedia.org/wiki/A",
+                                  "https://blog.example.com/a", "https://other.com/b"])
+
+    def test_search_with_preferred_sites(self):
+        queries = []
+
+        def fetch(url):
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["q"][0]
+            queries.append(query)
+            if "site:hbr.org" in query:
+                return ('<a class="result__a" href="https://hbr.org/motivation">HBR on motivation</a>'
+                        '<a class="result__snippet">How leaders motivate</a>')
+            return DDG_SAMPLE
+
+        results = web_search.search("motivation", fetch=fetch, sites="hbr.org")
+        self.assertEqual(sorted(queries), sorted([
+            "motivation site:hbr.org",
+            "motivation " + " ".join(f"-site:{s}" for s in web_search.EXCLUDED_SITES)]))
+        self.assertEqual(results[0]["url"], "https://hbr.org/motivation")
+        self.assertEqual([r["trusted"] for r in results], [True, False, False])
+
+    def test_empty_search_with_exclusions_is_retried_plain(self):
+        queries = []
+
+        def fetch(url):
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["q"][0]
+            queries.append(query)
+            return "" if "-site:" in query else DDG_SAMPLE
+
+        results = web_search.search("whisper", fetch=fetch)
+        self.assertEqual(queries[-1], "whisper")
+        self.assertEqual(len(results), 2)
+
+    def test_extract_relevant_text_skips_menus_scripts_and_footers(self):
+        text = web_search.extract_relevant_text(PAGE_HTML, "What is Whisper speech recognition?")
+        self.assertIn("Whisper is a speech recognition model", text)
+        self.assertNotIn("tracking", text)
+        self.assertNotIn("newsletter", text)
+        self.assertNotIn("cookie", text)
+        self.assertNotIn("every other product", text)
+        self.assertNotIn("Short.", text)
+        # el párrafo más relevante entra aunque no quepa todo
+        small = web_search.extract_relevant_text(PAGE_HTML, "speech recognition multilingual audio", max_chars=100)
+        self.assertTrue(small.startswith("Whisper is a speech recognition model"))
+        self.assertLessEqual(len(small), 101)
+
+    def test_read_pages_only_public_https(self):
+        results = [{"url": u, "title": "t", "snippet": "s"} for u in (
+            "http://insecure.com/a", "https://192.168.1.1/admin", "https://localhost/x",
+            "https://www.youtube.com/watch?v=1", "https://site.com/doc.pdf", "https://good.com/page")]
+        fetched = []
+        web_search.read_pages(results, "whisper", 2, fetch_page=lambda url: fetched.append(url) or PAGE_HTML)
+        self.assertEqual(fetched, ["https://good.com/page"])
+        self.assertIn("speech recognition", results[-1]["content"])
+        self.assertNotIn("content", results[0])
+
+    def test_read_pages_failure_or_timeout_keeps_snippet(self):
+        results = [{"url": "https://slow.com/a", "title": "t", "snippet": "s"},
+                   {"url": "https://broken.com/b", "title": "t", "snippet": "s"}]
+
+        def fetch_page(url):
+            if "slow" in url:
+                time.sleep(0.5)
+                return PAGE_HTML
+            raise OSError("404")
+
+        start = time.monotonic()
+        web_search.read_pages(results, "whisper", 2, fetch_page=fetch_page, deadline=0.1)
+        self.assertLess(time.monotonic() - start, 0.4)
+        self.assertFalse(any("content" in r for r in results))
+
+    def test_redirects_only_to_public_https(self):
+        self.assertTrue(web_search._is_public_https("https://example.com/a"))
+        for url in ("http://example.com", "https://10.0.0.1/", "https://[::1]/", "https://printer.local/", "file:///etc"):
+            self.assertFalse(web_search._is_public_https(url), url)
+
+    def test_prompt_uses_page_text_and_marks_reliable_sources(self):
+        labels = summarizer._prompts("en")["ask"]
+        block = summarizer._web_block([
+            {"title": "Wiki", "url": "https://en.wikipedia.org/wiki/W", "snippet": "short", "trusted": True,
+             "content": "Full paragraph from the page."},
+            {"title": "Blog", "url": "https://blog.com/x", "snippet": "Blog snippet", "trusted": False},
+        ], labels)
+        self.assertIn("[1] Wiki (reliable source) — https://en.wikipedia.org/wiki/W\nFull paragraph from the page.", block)
+        self.assertIn("[2] Blog — https://blog.com/x\nBlog snippet", block)
+        self.assertEqual(summarizer._sources([{"title": "Wiki", "url": "u", "trusted": True, "content": "x"}]),
+                         [{"title": "Wiki", "url": "u", "trusted": True, "read": True}])
+
+    def test_serve_passes_sites_and_reading(self):
+        with mock.patch.object(summarizer, "open_question", return_value={"answer": "o", "sources": []}) as op:
+            summarizer.handle_request({"type": "ask", "text": "t", "question": "q", "mode": "open",
+                                       "sites": "hbr.org", "read": "0"})
+        self.assertEqual(op.call_args[1]["sites"], "hbr.org")
+        self.assertEqual(op.call_args[1]["read"], 0)
+
+
 class ExtendWithWebTests(unittest.TestCase):
     def test_extend_cites_sources(self):
         results = [{"title": "Whisper", "url": "https://openai.com/w", "snippet": "ASR model"}]
@@ -461,14 +599,15 @@ class ExtendWithWebTests(unittest.TestCase):
                 mock.patch.object(summarizer, "load_context", return_value=""), \
                 mock.patch.object(summarizer, "_ensure_model"):
             reply = summarizer.extend_with_web("What is Whisper?", previous="They use Whisper.", notes="## Summary\nY",
-                                               language="en", search=lambda q, language: results)
-        self.assertEqual(reply, {"answer": "Meeting: X. Web: ASR [1].", "sources": [{"title": "Whisper", "url": "https://openai.com/w"}]})
+                                               language="en", search=lambda q, **kwargs: results)
+        self.assertEqual(reply, {"answer": "Meeting: X. Web: ASR [1].", "sources": [
+            {"title": "Whisper", "url": "https://openai.com/w", "trusted": False, "read": False}]})
         prompt = fake.call_args[0][1]
         self.assertIn("Answer based on the meeting:\nThey use Whisper.", prompt)
         self.assertIn("[1] Whisper — https://openai.com/w\nASR model", prompt)
 
     def test_no_results(self):
-        reply = summarizer.extend_with_web("x", language="es", search=lambda q, language: [])
+        reply = summarizer.extend_with_web("x", language="es", search=lambda q, **kwargs: [])
         self.assertEqual(reply["sources"], [])
         self.assertIn("No encontré", reply["answer"])
 
@@ -477,7 +616,7 @@ class ExtendWithWebTests(unittest.TestCase):
             reply = summarizer.handle_request({"type": "extend", "question": "q", "previous": "p", "notes": "n",
                                                "lang": "en", "detail": "short"})
         self.assertEqual(reply, {"answer": "a", "sources": []})
-        fake.assert_called_once_with("q", "p", "n", "en", "short")
+        fake.assert_called_once_with("q", "p", "n", "en", "short", sites="", read=summarizer.WEB_READ_PAGES)
 
 
 class ModelLoadTests(unittest.TestCase):
@@ -581,8 +720,9 @@ class OpenModeTests(unittest.TestCase):
 
     def test_uses_web_and_brainstorm_prompts(self):
         results = [{"title": "Growth loops", "url": "https://x.org/g", "snippet": "Referrals work"}]
-        reply, call = self._run(search=lambda q, language: results)
-        self.assertEqual(reply, {"answer": "Idea: try a pilot [1].", "sources": [{"title": "Growth loops", "url": "https://x.org/g"}]})
+        reply, call = self._run(search=lambda q, **kwargs: results)
+        self.assertEqual(reply, {"answer": "Idea: try a pilot [1].", "sources": [
+            {"title": "Growth loops", "url": "https://x.org/g", "trusted": False, "read": False}]})
         system, user = call[0][0], call[0][1]
         self.assertIn("brainstorming meeting", system)
         self.assertNotIn("Use only what the transcript says", system)
@@ -591,7 +731,7 @@ class OpenModeTests(unittest.TestCase):
         self.assertIn("Notes of the meeting so far", user)
 
     def test_offline_still_answers(self):
-        def broken(q, language):
+        def broken(q, **kwargs):
             raise OSError("offline")
         reply, call = self._run(search=broken)
         self.assertEqual(reply["sources"], [])
@@ -599,7 +739,7 @@ class OpenModeTests(unittest.TestCase):
         self.assertNotIn("Web search results", call[0][1])
 
     def test_web_disabled_never_searches(self):
-        def must_not_search(q, language):
+        def must_not_search(q, **kwargs):
             raise AssertionError("searched with web disabled")
         reply, _ = self._run(search=must_not_search, web=False)
         self.assertEqual(reply["sources"], [])

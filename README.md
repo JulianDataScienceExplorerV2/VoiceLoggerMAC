@@ -23,7 +23,7 @@ It uses **MLX Whisper** on Apple Silicon, system-audio capture via **ScreenCaptu
 - **`qwen_context.txt`**: persona/context for the AI (“You are an expert in …”).
 - **Live text speed** (Fast / Normal / Precise), interface size, reading font, floating captions, compact mode, always on top, keyword alerts, Whisper and Qwen model pickers, keyboard shortcuts.
 - **Summary tabs**: Summary (default) · Questions · Tasks.
-- 🌐 **Extend with the web** (optional, per answer): searches only the question text on DuckDuckGo/Wikipedia and cites sources.
+- 🌐 **Extend with the web** (optional, per answer): searches only the question text on DuckDuckGo/Wikipedia (plus your preferred sites with `site:`), puts reliable sources first, reads the best pages and cites sources.
 - Local: audio, transcript and AI stay on your Mac (only the 🌐 button sends the question text to a search engine).
 
 Requirements: macOS 15+, Apple Silicon, Xcode 16 (Swift 6). The AI side reuses this repo's Python environment:

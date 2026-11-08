@@ -25,10 +25,20 @@ struct LiveInsights: Decodable, Sendable {
     }
 }
 
-/// A web page used by "Ampliar con internet".
+/// A web page used by an answer with internet (Ideas mode or "Ampliar con internet").
 struct WebSource: Decodable, Sendable, Equatable {
     let title: String
     let url: String
+    /// Wikipedia, government, universities, science, serious press, official docs.
+    var trusted: Bool? = nil
+    /// The AI read the page text, not only the search engine snippet.
+    var read: Bool? = nil
+
+    /// "wikipedia.org", "hbr.org"… (without "www.").
+    var domain: String {
+        guard let host = URL(string: url)?.host() else { return "" }
+        return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+    }
 }
 
 /// Splits a byte stream into newline-terminated lines. Thread-safe: it is fed
@@ -124,15 +134,16 @@ actor QwenServer {
     /// `detail`: "long" (thorough, default) or "short" (2-4 sentences).
     /// `mode`: "meeting" answers only from the meeting; "open" (brainstorming)
     /// adds the model's own knowledge and, if `web`, web results (only the
-    /// question text is searched).
+    /// question text is searched). `sites`: preferred sites, searched with
+    /// `site:`; `readPages`: open the best pages instead of only the snippets.
     func ask(
         question: String, text: String, notes: String, session: String, memoryDir: String,
-        lang: String, detail: String, mode: String, web: Bool
+        lang: String, detail: String, mode: String, web: Bool, sites: String, readPages: Bool
     ) async throws -> (answer: String, sources: [WebSource]) {
         let data = try await send([
             "type": "ask", "question": question, "text": text, "notes": notes,
             "session": session, "memory_dir": memoryDir, "lang": lang, "detail": detail,
-            "mode": mode, "web": web ? "1" : "0",
+            "mode": mode, "web": web ? "1" : "0", "sites": sites, "read": readPages ? "1" : "0",
         ])
         let result = try JSONDecoder().decode(Envelope<Answer>.self, from: data).result
         return (result.answer.trimmingCharacters(in: .whitespacesAndNewlines), result.sources ?? [])
@@ -140,10 +151,13 @@ actor QwenServer {
 
     /// Extends an answer with web results. Only `question` is searched on the
     /// internet; the meeting stays on the Mac (notes go to the local model only).
-    func extend(question: String, previous: String, notes: String, lang: String, detail: String) async throws -> (answer: String, sources: [WebSource]) {
+    func extend(
+        question: String, previous: String, notes: String, lang: String, detail: String,
+        sites: String, readPages: Bool
+    ) async throws -> (answer: String, sources: [WebSource]) {
         let data = try await send([
             "type": "extend", "question": question, "previous": previous, "notes": notes,
-            "lang": lang, "detail": detail,
+            "lang": lang, "detail": detail, "sites": sites, "read": readPages ? "1" : "0",
         ])
         let result = try JSONDecoder().decode(Envelope<Extended>.self, from: data).result
         return (result.answer.trimmingCharacters(in: .whitespacesAndNewlines), result.sources)

@@ -110,6 +110,11 @@ final class AppState: ObservableObject {
     @Published var summaryTab = "summary"
     /// Show the 🌐 "Ampliar con internet" button (sends only the question).
     @Published var allowWebSearch = true { didSet { save() } }
+    /// Preferred sites for web answers ("hbr.org, who.int"): each one gets its
+    /// own `site:` search and goes first in the sources (up to 3).
+    @Published var preferredSites = "" { didSet { save() } }
+    /// Open and read the best pages found, not only the search snippets.
+    @Published var readWebPages = true { didSet { save() } }
     /// Transcript fragments saved in the meeting memory on disk.
     @Published var memorySegments = 0
     @Published var qaQuestion = ""
@@ -953,6 +958,8 @@ final class AppState: ObservableObject {
         let session = currentSession()
         let directory = memoryDirectory.path
         let web = allowWebSearch
+        let sites = preferredSites
+        let readPages = readWebPages
         Task {
             let answer: String
             let sources: [WebSource]
@@ -960,7 +967,8 @@ final class AppState: ObservableObject {
             do {
                 let result = try await server.ask(
                     question: question, text: context, notes: notes, session: session,
-                    memoryDir: directory, lang: lang, detail: detail, mode: mode, web: web
+                    memoryDir: directory, lang: lang, detail: detail, mode: mode, web: web,
+                    sites: sites, readPages: readPages
                 )
                 answer = result.answer
                 sources = result.sources
@@ -1115,12 +1123,17 @@ final class AppState: ObservableObject {
         let notes = liveMarkdown
         let lang = summaryLang
         let detail = longAnswers ? "long" : "short"
+        let sites = preferredSites
+        let readPages = readWebPages
         Task {
             let answer: String
             let sources: [WebSource]
             let failed: Bool
             do {
-                let result = try await server.extend(question: question, previous: previous, notes: notes, lang: lang, detail: detail)
+                let result = try await server.extend(
+                    question: question, previous: previous, notes: notes, lang: lang, detail: detail,
+                    sites: sites, readPages: readPages
+                )
                 answer = result.answer
                 sources = result.sources
                 failed = false
@@ -1270,6 +1283,8 @@ final class AppState: ObservableObject {
         d.set(vocabulary, forKey: "vocabulary")
         d.set(askTasksOnStop, forKey: "ask_tasks_on_stop")
         d.set(allowWebSearch, forKey: "allow_web_search")
+        d.set(preferredSites, forKey: "preferred_sites")
+        d.set(readWebPages, forKey: "read_web_pages")
         d.set(askModelsOnLaunch, forKey: "ask_models_on_launch")
         d.set(modelsChosen, forKey: "models_chosen")
         d.set(showKeyQuestions, forKey: "show_key_questions")
@@ -1289,7 +1304,7 @@ final class AppState: ObservableObject {
         let keys = [
             "model", "language", "sensitivity", "alerts", "alert_sound", "autoscroll", "ai_lang", "auto_summary",
             "font_size", "always_on_top", "dim_when_idle", "live_interval", "qwen_model", "ui_scale",
-            "long_answers", "answer_mode", "live_speed", "vocabulary", "show_key_questions", "ask_tasks_on_stop", "allow_web_search", "ask_models_on_launch", "models_chosen", "python_root",
+            "long_answers", "answer_mode", "live_speed", "vocabulary", "show_key_questions", "ask_tasks_on_stop", "allow_web_search", "preferred_sites", "read_web_pages", "ask_models_on_launch", "models_chosen", "python_root",
         ]
         for key in keys {
             if let value = old.object(forKey: key) { d.set(value, forKey: key) }
@@ -1319,6 +1334,8 @@ final class AppState: ObservableObject {
         vocabulary = d.string(forKey: "vocabulary") ?? ""
         askTasksOnStop = d.object(forKey: "ask_tasks_on_stop") as? Bool ?? true
         allowWebSearch = d.object(forKey: "allow_web_search") as? Bool ?? true
+        preferredSites = d.string(forKey: "preferred_sites") ?? ""
+        readWebPages = d.object(forKey: "read_web_pages") as? Bool ?? true
         askModelsOnLaunch = d.object(forKey: "ask_models_on_launch") as? Bool ?? true
         modelsChosen = d.object(forKey: "models_chosen") as? Bool ?? false
         showKeyQuestions = d.object(forKey: "show_key_questions") as? Bool ?? true
@@ -1714,10 +1731,29 @@ struct QARow: View {
                                     Text("Fuentes").scaledFont(10, weight: .bold).foregroundStyle(.secondary)
                                     ForEach(Array(item.sources.enumerated()), id: \.offset) { source in
                                         if let url = URL(string: source.element.url) {
-                                            Link("[\(source.offset + 1)] \(source.element.title)", destination: url)
-                                                .scaledFont(11)
-                                                .lineLimit(1)
-                                                .help(source.element.url)
+                                            HStack(spacing: 5) {
+                                                Link("[\(source.offset + 1)] \(source.element.title)", destination: url)
+                                                    .scaledFont(11)
+                                                    .lineLimit(1)
+                                                    .help(source.element.url)
+                                                Text(source.element.domain)
+                                                    .scaledFont(10)
+                                                    .foregroundStyle(.secondary)
+                                                    .lineLimit(1)
+                                                    .layoutPriority(1)
+                                                if source.element.trusted == true {
+                                                    Image(systemName: "checkmark.seal.fill")
+                                                        .scaledFont(10)
+                                                        .foregroundStyle(Theme.brand)
+                                                        .help("Fuente confiable: Wikipedia, gobierno, universidad, organismo, ciencia, prensa seria o documentación oficial")
+                                                }
+                                                if source.element.read == true {
+                                                    Image(systemName: "text.magnifyingglass")
+                                                        .scaledFont(10)
+                                                        .foregroundStyle(.secondary)
+                                                        .help("La IA leyó el texto de esta página, no solo el resumen del buscador")
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -1731,7 +1767,7 @@ struct QARow: View {
                                 }
                                 .buttonStyle(.plain)
                                 .foregroundStyle(Theme.qa)
-                                .help("Busca solo esta pregunta en DuckDuckGo / Wikipedia; la reunión no sale de tu Mac")
+                                .help("Busca solo esta pregunta en DuckDuckGo / Wikipedia (y tus sitios preferidos); la reunión no sale de tu Mac")
                             }
                         }
                     }
@@ -2406,6 +2442,13 @@ struct SettingsPopover: View {
                     Text("Reunión: solo lo que se dijo").tag("meeting")
                 }
                 Toggle("Permitir internet en respuestas (solo envía la pregunta)", isOn: $state.allowWebSearch)
+                TextField("Sitios preferidos", text: $state.preferredSites,
+                          prompt: Text("hbr.org, mckinsey.com, who.int (hasta 3)"))
+                    .help("Se busca en cada uno con site: y van primero en las fuentes. Vacío = búsqueda normal (sin redes sociales, con Wikipedia, gobierno, universidades y prensa seria primero)")
+                    .disabled(!state.allowWebSearch)
+                Toggle("Leer las páginas encontradas (más preciso, unos segundos más)", isOn: $state.readWebPages)
+                    .help("Abre las 2 mejores páginas y le pasa a la IA sus párrafos más relacionados con la pregunta, no solo el resumen del buscador")
+                    .disabled(!state.allowWebSearch)
                 Toggle("Preguntar los modelos al abrir la app", isOn: $state.askModelsOnLaunch)
                 Toggle("Resumen y preguntas clave en vivo", isOn: $state.autoSummary)
                 Picker("Actualizar cada", selection: $state.liveInterval) {

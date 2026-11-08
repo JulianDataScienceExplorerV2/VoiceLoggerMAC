@@ -23,7 +23,7 @@ En `native/` está la versión nativa para macOS, pensada para leer durante la r
 - **`qwen_context.txt`**: persona/contexto para la IA («You are an expert in …»).
 - **Velocidad del texto en vivo** (Rápida / Normal / Precisa), tamaño de interfaz, letra de lectura, subtítulos flotantes, modo compacto, siempre encima, alertas, selector de modelos Whisper y Qwen, atajos de teclado.
 - **Pestañas en el Resumen IA**: Resumen (por defecto) · Preguntas · Tareas.
-- 🌐 **Ampliar con internet** (opcional, por respuesta): busca solo el texto de la pregunta en DuckDuckGo/Wikipedia y cita las fuentes.
+- 🌐 **Ampliar con internet** (opcional, por respuesta): busca solo el texto de la pregunta en DuckDuckGo/Wikipedia (y en tus sitios preferidos con `site:`), pone primero las fuentes confiables, lee las mejores páginas y cita las fuentes.
 - Local: audio, transcripción e IA se quedan en tu Mac (solo el botón 🌐 envía el texto de la pregunta a un buscador).
 
 Requisitos: macOS 15+, Apple Silicon, Xcode 16 (Swift 6). La parte de IA usa el entorno Python de este repo:

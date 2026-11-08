@@ -137,17 +137,19 @@ PROMPTS = {
             "transcript": "Meeting transcript:",
             "question": "Question:",
             "web": "Web search results:",
+            "reliable": "reliable source",
             "open_instruction": (
                 "Answer as a brainstorming partner: use the meeting as context plus your own knowledge and "
                 "the web results to bring useful ideas, options, examples and next steps. Make clear what "
                 "comes from the meeting and what is general knowledge, and cite web facts with their number, "
-                "like [1] or [2]."
+                "like [1] or [2]. If sources disagree, trust the ones marked (reliable source)."
             ),
             "previous": "Answer based on the meeting:",
             "extend": (
                 "Extend the answer with useful information from the web results. Keep what the "
                 "meeting said, clearly separate it from what comes from the web, and cite web facts "
-                "with their number, like [1] or [2]. If the web results are not relevant, say so."
+                "with their number, like [1] or [2]. If sources disagree, trust the ones marked "
+                "(reliable source). If the web results are not relevant, say so."
             ),
             "instruction_short": (
                 "Answer concisely (2-4 sentences) using only this information. If the answer "
@@ -217,17 +219,20 @@ PROMPTS = {
             "transcript": "Transcripción de la reunión:",
             "question": "Pregunta:",
             "web": "Resultados de la búsqueda en internet:",
+            "reliable": "fuente confiable",
             "open_instruction": (
                 "Responde como compañero de lluvia de ideas: usa la reunión como contexto más tu propio "
                 "conocimiento y los resultados de internet para aportar ideas, opciones, ejemplos y próximos "
                 "pasos. Deja claro qué viene de la reunión y qué es conocimiento general, y cita los datos de "
-                "internet con su número, como [1] o [2]."
+                "internet con su número, como [1] o [2]. Si las fuentes no coinciden, confía en las marcadas "
+                "(fuente confiable)."
             ),
             "previous": "Respuesta basada en la reunión:",
             "extend": (
                 "Amplía la respuesta con información útil de los resultados de internet. Conserva lo "
                 "que dijo la reunión, sepáralo claramente de lo que viene de internet y cita los datos "
-                "de internet con su número, como [1] o [2]. Si los resultados no son relevantes, dilo."
+                "de internet con su número, como [1] o [2]. Si las fuentes no coinciden, confía en las "
+                "marcadas (fuente confiable). Si los resultados no son relevantes, dilo."
             ),
             "instruction_short": (
                 "Responde de forma concisa (2-4 frases) usando solo esta información. Si la "
@@ -803,6 +808,32 @@ OPEN_LENGTH = {
 }
 
 
+# ---------- Resultados de internet en el prompt ----------
+
+# Presupuesto del bloque de internet: con páginas leídas hay más texto útil.
+WEB_TOKENS = 2200
+WEB_READ_PAGES = 2  # páginas que se abren y leen (además del resumen del buscador)
+
+
+def _web_block(results, labels):
+    """Resultados numerados [1], [2]… para el prompt: el texto leído de la
+    página si lo hay, si no el resumen del buscador; las fuentes confiables
+    van marcadas."""
+    items = []
+    for n, r in enumerate(results, start=1):
+        mark = f" ({labels['reliable']})" if r.get("trusted") else ""
+        body = r.get("content") or r.get("snippet") or ""
+        items.append(f"[{n}] {r['title']}{mark} — {r['url']}\n{body}")
+    return fit_tokens("\n\n".join(items), WEB_TOKENS, keep="head")
+
+
+def _sources(results):
+    return [
+        {"title": r["title"], "url": r["url"], "trusted": bool(r.get("trusted")), "read": bool(r.get("content"))}
+        for r in results
+    ]
+
+
 def _open_blocking(text, question, language, notes, memory, results, detail):
     labels = _prompts(language)["ask"]
     detail = detail if detail in ANSWER_MAX_TOKENS else "long"
@@ -817,8 +848,7 @@ def _open_blocking(text, question, language, notes, memory, results, detail):
     if text:
         blocks.append(f"{labels['recent'] if (notes or memory) else labels['transcript']}\n{text}")
     if results:
-        web = "\n\n".join(f"[{n}] {r['title']} — {r['url']}\n{r['snippet']}" for n, r in enumerate(results, start=1))
-        blocks.append(f"{labels['web']}\n{fit_tokens(web, EXTEND_WEB_TOKENS, keep='head')}")
+        blocks.append(f"{labels['web']}\n{_web_block(results, labels)}")
     length = OPEN_LENGTH.get(language, OPEN_LENGTH["en"])[detail]
     blocks.append(f"{labels['question']} {question}\n{labels['open_instruction']} {length}")
     return _generate(
@@ -832,25 +862,27 @@ def _run_open(text, question, language, notes, memory, results, detail):
     return _open_blocking(text, question, language, notes, memory, results, detail)
 
 
-def open_question(text, question, language="en", notes="", memory="", detail="long", web=True, search=None):
+def open_question(text, question, language="en", notes="", memory="", detail="long", web=True,
+                  sites="", read=WEB_READ_PAGES, search=None):
     """Modo «Ideas»: responde con la reunión como contexto + conocimiento propio + internet.
 
-    Solo el texto de la pregunta sale a internet (si ``web``). Si la búsqueda
-    falla, responde igual con lo que sabe. Devuelve {"answer", "sources"}.
+    Solo el texto de la pregunta sale a internet (si ``web``). ``sites``: sitios
+    preferidos (se buscan con site:); ``read``: cuántas páginas leer enteras.
+    Si la búsqueda falla, responde igual con lo que sabe. Devuelve {"answer", "sources"}.
     """
     results = []
     if web:
         if search is None:
             from web_search import search
         try:
-            results = search(question, language=language)
+            results = search(question, language=language, sites=sites, read=read)
         except Exception:
             results = []  # sin internet: responde con la reunión y lo que sabe
     text = _tail_text((text or "").strip(), QA_MAX_CHARS, language)
     answer = clean_answer(_executor.submit(
         _run_open, text, question, language, notes or "", memory or "", results, detail or "long"
     ).result())
-    return {"answer": answer, "sources": [{"title": r["title"], "url": r["url"]} for r in results]}
+    return {"answer": answer, "sources": _sources(results)}
 
 
 def recall(memory_dir, session, question, recent_text):
@@ -870,16 +902,12 @@ def recall(memory_dir, session, question, recent_text):
 
 # ---------- Ampliar una respuesta con internet ----------
 
-EXTEND_WEB_TOKENS = 1500
 EXTEND_NOTES_TOKENS = 600
 EXTEND_PREVIOUS_TOKENS = 700
 
 
 def _extend_blocking(question, previous, notes, results, language, detail):
     labels = _prompts(language)["ask"]
-    web = "\n\n".join(
-        f"[{n}] {r['title']} — {r['url']}\n{r['snippet']}" for n, r in enumerate(results, start=1)
-    )
     blocks = [f"{labels['question']} {question}"]
     previous = fit_tokens(previous, EXTEND_PREVIOUS_TOKENS, keep="head")
     notes = fit_tokens(notes, EXTEND_NOTES_TOKENS, keep="head")
@@ -887,7 +915,7 @@ def _extend_blocking(question, previous, notes, results, language, detail):
         blocks.append(f"{labels['previous']}\n{previous}")
     if notes:
         blocks.append(f"{labels['notes']}\n{notes}")
-    blocks.append(f"{labels['web']}\n{fit_tokens(web, EXTEND_WEB_TOKENS, keep='head')}")
+    blocks.append(f"{labels['web']}\n{_web_block(results, labels)}")
     detail = detail if detail in ANSWER_MAX_TOKENS else "long"
     blocks.append(labels["extend"])
     return _generate(
@@ -900,7 +928,8 @@ def _run_extend(question, previous, notes, results, language, detail):
     return _extend_blocking(question, previous, notes, results, language, detail)
 
 
-def extend_with_web(question, previous="", notes="", language="en", detail="long", search=None):
+def extend_with_web(question, previous="", notes="", language="en", detail="long", sites="",
+                    read=WEB_READ_PAGES, search=None):
     """Amplía una respuesta con resultados de internet.
 
     Solo se envía a internet el texto de ``question``; la reunión no sale del
@@ -911,7 +940,7 @@ def extend_with_web(question, previous="", notes="", language="en", detail="long
         raise ValueError("empty question")
     if search is None:
         from web_search import search
-    results = search(question, language=language)
+    results = search(question, language=language, sites=sites, read=read)
     if not results:
         empty = "No encontré resultados en internet para esa pregunta." if language == "es" else \
             "I couldn't find web results for that question."
@@ -919,7 +948,7 @@ def extend_with_web(question, previous="", notes="", language="en", detail="long
     answer = clean_answer(_executor.submit(
         _run_extend, question, previous or "", notes or "", results, language, detail or "long"
     ).result())
-    return {"answer": answer, "sources": [{"title": r["title"], "url": r["url"]} for r in results]}
+    return {"answer": answer, "sources": _sources(results)}
 
 
 # ---------- Tareas para Recordatorios ----------
@@ -994,6 +1023,14 @@ def extract_tasks(notes="", text="", language="en", today=None):
 
 # ---------- Proceso persistente para la app nativa ----------
 
+def _web_options(request):
+    """Sitios preferidos («hbr.org, who.int») y si se leen las páginas ("read": "0" = no)."""
+    return {
+        "sites": request.get("sites") or "",
+        "read": WEB_READ_PAGES if request.get("read", "1") != "0" else 0,
+    }
+
+
 def handle_request(request):
     kind = request.get("type")
     language = request.get("lang") or "en"
@@ -1016,7 +1053,7 @@ def handle_request(request):
         if request.get("mode") == "open":
             reply = open_question(
                 text, question, language, request.get("notes") or "", memory, detail,
-                web=request.get("web", "1") != "0",
+                web=request.get("web", "1") != "0", **_web_options(request),
             )
             reply["used_memory"] = bool(memory)
             return reply
@@ -1031,7 +1068,7 @@ def handle_request(request):
     if kind == "extend":
         return extend_with_web(
             request.get("question"), request.get("previous"), request.get("notes"), language,
-            request.get("detail") or "long",
+            request.get("detail") or "long", **_web_options(request),
         )
     if kind == "tasks":
         return {"tasks": extract_tasks(request.get("notes"), request.get("text"), language, request.get("today"))}
