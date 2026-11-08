@@ -10,6 +10,15 @@ struct TranscriptEntry: Identifiable, Equatable {
     var alert: Bool = false
 }
 
+/// A key question detected during the meeting. The live summary only keeps
+/// the current few (it rewrites them on every update), so the app keeps them all.
+struct DetectedQuestion: Identifiable, Equatable {
+    let id = UUID()
+    let text: String
+    /// HH:mm when it first appeared.
+    let time: String
+}
+
 struct QAItem: Identifiable, Equatable {
     let id = UUID()
     let question: String
@@ -91,6 +100,8 @@ final class AppState: ObservableObject {
     @Published var isWarmingAI = false
     /// Most important questions heard so far, extracted with the live summary.
     @Published var keyQuestions: [String] = []
+    /// Every key question detected in this meeting, oldest first.
+    @Published var questionHistory: [DetectedQuestion] = []
     /// Action items from the live summary ("Tareas" tab).
     @Published var actionItems: [String] = []
     /// Summary panel tab: "summary" (default), "questions", "tasks".
@@ -632,6 +643,7 @@ final class AppState: ObservableObject {
                 self.liveMarkdown = insights.markdown
                 self.liveSummary = insights.summary
                 self.keyQuestions = insights.questions
+                self.rememberQuestions(insights.questions)
                 self.actionItems = insights.actionItems
                 self.summarizedText = full
                 self.summaryUpdatedAt = Self.clock()
@@ -805,8 +817,8 @@ final class AppState: ObservableObject {
         md.append("")
         // Demote the model's "##" sections one level under this heading.
         md.append(liveSummary.isEmpty ? "_(sin resumen)_" : liveSummary.replacingOccurrences(of: "\n## ", with: "\n### ").replacingOccurrences(of: "## ", with: "### ", options: .anchored))
-        if !keyQuestions.isEmpty {
-            md += ["", "## Preguntas clave", ""] + keyQuestions.map { "- \($0)" }
+        if !questionHistory.isEmpty {
+            md += ["", "## Preguntas clave", ""] + questionHistory.map { "- [\($0.time)] \($0.text)" }
         }
         if !meetingTasks.isEmpty {
             md += ["", "## Tareas", ""] + meetingTasks.map(\.markdownLine)
@@ -982,9 +994,31 @@ final class AppState: ObservableObject {
         toast(message)
     }
 
+    /// Adds new key questions to the meeting's history (each one only once).
+    private func rememberQuestions(_ questions: [String]) {
+        var known = Set(questionHistory.map { Self.questionKey($0.text) })
+        let now = Self.clock()
+        for question in questions {
+            let key = Self.questionKey(question)
+            guard !key.isEmpty, !known.contains(key) else { continue }
+            known.insert(key)
+            questionHistory.append(DetectedQuestion(text: question, time: now))
+        }
+    }
+
+    private static func questionKey(_ text: String) -> String {
+        text.lowercased().filter { $0.isLetter || $0.isNumber }
+    }
+
+    /// Questions detected earlier that are no longer in the current list, newest first.
+    var earlierQuestions: [DetectedQuestion] {
+        let current = Set(keyQuestions.map { Self.questionKey($0) })
+        return questionHistory.filter { !current.contains(Self.questionKey($0.text)) }.reversed()
+    }
+
     var summaryTabIsEmpty: Bool {
         switch summaryTab {
-        case "questions": return keyQuestions.isEmpty
+        case "questions": return keyQuestions.isEmpty && questionHistory.isEmpty
         case "tasks": return actionItems.isEmpty
         default: return liveSummary.isEmpty
         }
@@ -994,7 +1028,7 @@ final class AppState: ObservableObject {
     func copySummaryTab() {
         switch summaryTab {
         case "questions":
-            copyText(keyQuestions.map { "- \($0)" }.joined(separator: "\n"), message: "Preguntas copiadas")
+            copyText(questionHistory.map { "- [\($0.time)] \($0.text)" }.joined(separator: "\n"), message: "Preguntas copiadas")
         case "tasks":
             copyText(actionItems.map { "- [ ] \($0)" }.joined(separator: "\n"), message: "Tareas copiadas")
         default:
@@ -1056,6 +1090,7 @@ final class AppState: ObservableObject {
         liveMarkdown = ""
         summarizedText = ""
         keyQuestions = []
+        questionHistory = []
         actionItems = []
         // A cleared transcript starts a new memory session (the old file stays on disk).
         sessionID = nil
@@ -1950,7 +1985,7 @@ struct FullView: View {
             VStack(spacing: 0) {
                 Picker("Mostrar", selection: $state.summaryTab) {
                     Text("Resumen").tag("summary")
-                    Text(state.keyQuestions.isEmpty ? "Preguntas" : "Preguntas (\(state.keyQuestions.count))").tag("questions")
+                    Text(state.questionHistory.isEmpty ? "Preguntas" : "Preguntas (\(state.questionHistory.count))").tag("questions")
                     Text(state.actionItems.isEmpty ? "Tareas" : "Tareas (\(state.actionItems.count))").tag("tasks")
                 }
                 .pickerStyle(.segmented)
@@ -1997,12 +2032,27 @@ struct FullView: View {
 
     @ViewBuilder
     private var summaryQuestionsTab: some View {
-        if state.keyQuestions.isEmpty {
-            Text("Todavía no hay preguntas clave. Salen solas con el resumen en vivo.")
+        if state.keyQuestions.isEmpty && state.questionHistory.isEmpty {
+            Text("Todavía no hay preguntas clave. Salen solas con el resumen en vivo y se quedan aquí toda la reunión.")
                 .foregroundStyle(.secondary)
         } else {
-            ForEach(Array(state.keyQuestions.enumerated()), id: \.offset) { item in
-                keyQuestionRow(item.element)
+            if !state.keyQuestions.isEmpty {
+                Text("AHORA")
+                    .scaledFont(10, weight: .bold)
+                    .foregroundStyle(.secondary)
+                ForEach(Array(state.keyQuestions.enumerated()), id: \.offset) { item in
+                    keyQuestionRow(item.element)
+                }
+            }
+            let earlier = state.earlierQuestions
+            if !earlier.isEmpty {
+                Text("ANTERIORES (\(earlier.count))")
+                    .scaledFont(10, weight: .bold)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, state.keyQuestions.isEmpty ? 0 : 8)
+                ForEach(earlier) { question in
+                    keyQuestionRow(question.text, time: question.time)
+                }
             }
         }
     }
@@ -2129,10 +2179,15 @@ struct FullView: View {
 
     /// One detected question: tap to have Qwen answer it, copy, or right-click.
     @ViewBuilder
-    private func keyQuestionRow(_ question: String) -> some View {
+    private func keyQuestionRow(_ question: String, time: String? = nil) -> some View {
         let answering = state.isAnswering(question)
         let plain = String(MarkdownText.inline(question).characters)
         HStack(alignment: .firstTextBaseline, spacing: 4) {
+            if let time {
+                Text(time)
+                    .scaledFont(10, design: .monospaced)
+                    .foregroundStyle(.secondary)
+            }
             Button {
                 state.ask(question)
             } label: {
