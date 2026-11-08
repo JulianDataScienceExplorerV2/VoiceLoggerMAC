@@ -33,6 +33,7 @@ final class AppState: ObservableObject {
     // Session
     @Published var isListening = false
     @Published var isStarting = false
+    @Published var isLoadingModel = false
     @Published var isPaused = false
     @Published var status = "Detenido"
     @Published var compact = false
@@ -50,6 +51,9 @@ final class AppState: ObservableObject {
     @Published var summaryUpdatedAt: String?
     @Published var summaryError: String?
     @Published var isSummarizing = false
+    @Published var isWarmingAI = false
+    /// Most important questions heard so far, extracted with the live summary.
+    @Published var keyQuestions: [String] = []
     @Published var qaQuestion = ""
     @Published var qaItems: [QAItem] = []
     @Published var qaRevision = 0
@@ -73,8 +77,11 @@ final class AppState: ObservableObject {
     @Published var alerts = "" { didSet { save() } }
     @Published var alertSound = true { didSet { save() } }
     @Published var autoscroll = true { didSet { save() } }
-    @Published var summaryLang = "es" { didSet { save() } }
+    /// Language of AI answers (summary, key questions, Q&A). English for now.
+    @Published var summaryLang = "en" { didSet { save() } }
     @Published var autoSummary = true { didSet { save() } }
+    /// Seconds between live summary updates (counted from the end of the previous one).
+    @Published var liveInterval = 30 { didSet { save() } }
     @Published var transcriptFontSize = 17 { didSet { save() } }
     @Published var alwaysOnTop = true { didSet { applyOnTop(); save() } }
     @Published var dimWhenIdle = true { didSet { save() } }
@@ -86,12 +93,24 @@ final class AppState: ObservableObject {
     private var transcriberTaskModel: String?
     private var segmenter: PhraseSegmenter?
     private var bridge: PythonBridge?
+    private var qwen: QwenServer?
     private var sessionTimer: Timer?
     private var sessionStart: Date?
     private var lastAlertAt: TimeInterval = 0
     private var lastEntryAt: Date?
-    private var phrasesSinceSummary = 0
     private var lastSummaryAt: Date?
+    /// Full notes from the last live update (fed back for incremental updates).
+    private var liveMarkdown = ""
+    /// Transcript already covered by `liveMarkdown`.
+    private var summarizedText = ""
+    private var hasUnsummarizedText = false
+    /// Bumped by "Limpiar" so late AI results for the old transcript are ignored.
+    private var aiGeneration = 0
+
+    /// Transcript sent whole to Qwen while it fits in one pass (~3-4k tokens).
+    static let singlePassChars = 12000
+    /// Most recent part of the transcript sent with each question.
+    static let questionChars = 24000
     private var isLoading = false
 
     init() {
@@ -174,6 +193,7 @@ final class AppState: ObservableObject {
             sessionStart = Date()
             metrics.elapsed = "00:00:00"
             startTimer()
+            if autoSummary { warmUpAI() }
         } catch {
             segmenter = nil
             status = "No se pudo iniciar la captura"
@@ -204,6 +224,23 @@ final class AppState: ObservableObject {
         if isPaused { metrics.level = 0 }
     }
 
+    /// Loads Whisper into memory as soon as the app opens, so "Iniciar" is
+    /// instant (the model files are already cached on disk after the first run).
+    func prewarm() {
+        guard transcriber == nil, transcriberTask == nil else { return }
+        Task {
+            do {
+                _ = try await self.ensureTranscriber()
+            } catch {
+                self.status = "Error cargando modelo: \(error.localizedDescription)"
+                return
+            }
+            if !self.isListening, !self.isStarting, self.status.hasPrefix("Cargando") {
+                self.status = "Detenido"
+            }
+        }
+    }
+
     /// Loads the WhisperKit model once; phrases that arrive while it loads
     /// (e.g. after switching models mid-session) wait for the same task
     /// instead of being dropped.
@@ -221,12 +258,14 @@ final class AppState: ObservableObject {
             }
             transcriberTask = task
             transcriberTaskModel = model
+            isLoadingModel = true
         }
         do {
             let loaded = try await task.value
             if transcriberTaskModel == model {
                 transcriberTask = nil
                 transcriberTaskModel = nil
+                isLoadingModel = false
             }
             if modelName == model { transcriber = loaded }
             return loaded
@@ -234,6 +273,7 @@ final class AppState: ObservableObject {
             if transcriberTaskModel == model {
                 transcriberTask = nil
                 transcriberTaskModel = nil
+                isLoadingModel = false
             }
             throw error
         }
@@ -289,7 +329,7 @@ final class AppState: ObservableObject {
         }
         transcriptRevision += 1
         notifyAlert(matched)
-        phrasesSinceSummary += 1
+        hasUnsummarizedText = true
         maybeAutoSummarize()
     }
 
@@ -309,6 +349,9 @@ final class AppState: ObservableObject {
         guard let start = sessionStart else { return }
         let elapsed = Int(Date().timeIntervalSince(start))
         metrics.elapsed = String(format: "%02d:%02d:%02d", elapsed / 3600, (elapsed % 3600) / 60, elapsed % 60)
+        // Also checked every second so the last phrases get summarized even
+        // when nobody speaks for a while.
+        maybeAutoSummarize()
     }
 
     // MARK: Alerts
@@ -331,7 +374,7 @@ final class AppState: ObservableObject {
         if alertSound { NSSound.beep() }
     }
 
-    // MARK: AI (Python bridge)
+    // MARK: AI (Qwen, persistent process)
 
     private func resolveBridge() -> PythonBridge? {
         if let bridge { return bridge }
@@ -339,44 +382,97 @@ final class AppState: ObservableObject {
         return bridge
     }
 
+    private func resolveServer() -> QwenServer? {
+        if let qwen { return qwen }
+        guard let bridge = resolveBridge() else { return nil }
+        let log = logger.logsDirectory.deletingLastPathComponent().appendingPathComponent("qwen_server.log")
+        let server = QwenServer(bridge: bridge, logURL: log)
+        qwen = server
+        return server
+    }
+
     private func transcriptForAI() -> String {
         entries.map { "[\($0.timestamp)] \($0.text)" }.joined(separator: "\n")
     }
 
-    /// Every run starts a Python process that loads Qwen, so the automatic
-    /// refresh waits for 5 new phrases and at least 45 s since the last one,
-    /// and never overlaps with a run in progress.
+    private func warmUpAI() {
+        guard !isWarmingAI, let server = resolveServer() else { return }
+        isWarmingAI = true
+        Task {
+            do {
+                try await server.warmup()
+            } catch {
+                self.summaryError = error.localizedDescription
+            }
+            self.isWarmingAI = false
+        }
+    }
+
+    /// Live mode: an update runs when there is new text and `liveInterval`
+    /// seconds have passed since the previous one finished. Never overlaps,
+    /// so Qwen is busy at most a fraction of the time.
     private func maybeAutoSummarize() {
-        guard autoSummary, !isSummarizing, phrasesSinceSummary >= 5 else { return }
-        if let last = lastSummaryAt, Date().timeIntervalSince(last) < 45 { return }
+        guard autoSummary, !isSummarizing, hasUnsummarizedText else { return }
+        if liveMarkdown.isEmpty, entries.reduce(0, { $0 + $1.text.count }) < 150 { return }
+        if let last = lastSummaryAt, Date().timeIntervalSince(last) < Double(liveInterval) { return }
         refreshSummary()
     }
 
     func refreshSummary(force: Bool = false) {
         guard !isSummarizing else { return }
-        let text = transcriptForAI()
-        guard !text.isEmpty else {
+        let full = transcriptForAI()
+        guard !full.isEmpty else {
             if force { toast("Todavía no hay transcripción para resumir.") }
             return
         }
-        guard let bridge = resolveBridge() else {
+        guard let server = resolveServer() else {
             summaryError = PythonBridge.missingMessage
             return
         }
+        var newText = full
+        if !summarizedText.isEmpty, full.hasPrefix(summarizedText) {
+            newText = String(full.dropFirst(summarizedText.count))
+        }
+        if !force, !liveMarkdown.isEmpty, newText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            hasUnsummarizedText = false
+            return
+        }
+        // Short meetings: notes rebuilt from the whole transcript (best quality).
+        // Long ones: previous notes + only the new part, so every update costs
+        // about the same no matter how long the meeting is.
+        let rebuild = full.count <= Self.singlePassChars || liveMarkdown.isEmpty
+        let fullText = rebuild ? String(full.suffix(Self.singlePassChars)) : ""
+        let previous = rebuild ? "" : liveMarkdown
+        let delta = rebuild ? "" : String(newText.suffix(Self.singlePassChars))
+        let lang = summaryLang
+        let generation = aiGeneration
+
         isSummarizing = true
         summaryError = nil
-        phrasesSinceSummary = 0
-        let lang = summaryLang
+        hasUnsummarizedText = false
         Task {
+            let outcome: Result<LiveInsights, Error>
             do {
-                let result = try await bridge.run(["summary", "--lang", lang], input: text)
-                self.liveSummary = result
-                self.summaryUpdatedAt = Self.clock()
+                outcome = .success(try await server.liveInsights(
+                    text: fullText, newText: delta, previous: previous, lang: lang
+                ))
             } catch {
-                self.summaryError = error.localizedDescription
+                outcome = .failure(error)
             }
             self.isSummarizing = false
             self.lastSummaryAt = Date()
+            guard generation == self.aiGeneration else { return }
+            switch outcome {
+            case .success(let insights):
+                self.liveMarkdown = insights.markdown
+                self.liveSummary = insights.summary
+                self.keyQuestions = insights.questions
+                self.summarizedText = full
+                self.summaryUpdatedAt = Self.clock()
+            case .failure(let error):
+                self.summaryError = error.localizedDescription
+                self.hasUnsummarizedText = true
+            }
         }
     }
 
@@ -387,37 +483,63 @@ final class AppState: ObservableObject {
     func askQuestion() {
         let question = qaQuestion.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else { return }
+        if ask(question) { qaQuestion = "" }
+    }
+
+    /// Asks Qwen about the meeting (typed question or a detected key question).
+    @discardableResult
+    func ask(_ question: String) -> Bool {
         let text = transcriptForAI()
         guard !text.isEmpty else {
             toast("Todavía no hay transcripción sobre la que preguntar.")
-            return
+            return false
         }
-        guard let bridge = resolveBridge() else {
+        guard let server = resolveServer() else {
             toast(PythonBridge.missingMessage, kind: "error")
-            return
+            return false
         }
-        qaQuestion = ""
         let item = QAItem(question: question)
         qaItems.append(item)
         qaRevision += 1
         let lang = summaryLang
+        let context = String(text.suffix(Self.questionChars))
         Task {
             let answer: String
             let failed: Bool
             do {
-                // `--question=` keeps questions that start with "-" intact.
-                answer = try await bridge.run(["ask", "--lang", lang, "--question=\(question)"], input: text)
+                answer = try await server.ask(question: question, text: context, lang: lang)
                 failed = false
             } catch {
                 answer = error.localizedDescription
                 failed = true
             }
             if let index = self.qaItems.firstIndex(where: { $0.id == item.id }) {
-                self.qaItems[index].answer = answer
+                self.qaItems[index].answer = answer.isEmpty ? "—" : answer
                 self.qaItems[index].failed = failed
                 self.qaRevision += 1
             }
         }
+        return true
+    }
+
+    /// Opens qwen_context.txt (persona / context prepended to every prompt),
+    /// creating it from the template the first time. Python re-reads it on
+    /// every request, so saving is enough.
+    func openAIContext() {
+        guard let bridge = resolveBridge() else {
+            toast(PythonBridge.missingMessage, kind: "error")
+            return
+        }
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: bridge.contextFile.path) {
+            if fm.fileExists(atPath: bridge.contextExample.path) {
+                try? fm.copyItem(at: bridge.contextExample, to: bridge.contextFile)
+            } else {
+                try? "You are an expert in XXXXXXXX.\n".write(to: bridge.contextFile, atomically: true, encoding: .utf8)
+            }
+        }
+        NSWorkspace.shared.open(bridge.contextFile)
+        toast("Guarda el archivo: se aplica en la siguiente respuesta de la IA.")
     }
 
     // MARK: Actions
@@ -481,9 +603,14 @@ final class AppState: ObservableObject {
         transcriptRevision += 1
         lastEntryAt = nil
         liveSummary = ""
+        liveMarkdown = ""
+        summarizedText = ""
+        keyQuestions = []
+        hasUnsummarizedText = false
+        lastSummaryAt = nil
+        aiGeneration += 1
         summaryUpdatedAt = nil
         summaryError = nil
-        phrasesSinceSummary = 0
         qaItems.removeAll()
         qaRevision += 1
     }
@@ -529,7 +656,7 @@ final class AppState: ObservableObject {
     }
 
     var statusLabel: String {
-        if isStarting { return "Cargando modelo…" }
+        if isStarting || isLoadingModel { return "Cargando modelo…" }
         if status.hasPrefix("Error") || status.hasPrefix("No se pudo") { return "Error" }
         guard isListening else { return "Detenido" }
         if isPaused { return "Pausado" }
@@ -572,8 +699,9 @@ final class AppState: ObservableObject {
         d.set(alerts, forKey: "alerts")
         d.set(alertSound, forKey: "alert_sound")
         d.set(autoscroll, forKey: "autoscroll")
-        d.set(summaryLang, forKey: "summary_lang")
+        d.set(summaryLang, forKey: "ai_lang")
         d.set(autoSummary, forKey: "auto_summary")
+        d.set(liveInterval, forKey: "live_interval")
         d.set(transcriptFontSize, forKey: "font_size")
         d.set(alwaysOnTop, forKey: "always_on_top")
         d.set(dimWhenIdle, forKey: "dim_when_idle")
@@ -589,8 +717,9 @@ final class AppState: ObservableObject {
         alerts = d.string(forKey: "alerts") ?? ""
         alertSound = d.object(forKey: "alert_sound") as? Bool ?? true
         autoscroll = d.object(forKey: "autoscroll") as? Bool ?? true
-        summaryLang = d.string(forKey: "summary_lang") ?? "es"
+        summaryLang = d.string(forKey: "ai_lang") ?? "en"
         autoSummary = d.object(forKey: "auto_summary") as? Bool ?? true
+        liveInterval = d.object(forKey: "live_interval") as? Int ?? 30
         transcriptFontSize = max(12, min(28, d.object(forKey: "font_size") as? Int ?? 17))
         alwaysOnTop = d.object(forKey: "always_on_top") as? Bool ?? true
         dimWhenIdle = d.object(forKey: "dim_when_idle") as? Bool ?? true
@@ -736,6 +865,30 @@ struct SessionMeter: View {
             LevelMeter(level: metrics.level)
                 .frame(width: 84, height: 12)
         }
+    }
+}
+
+/// Pulsing "EN VIVO" tag shown while the summary updates itself.
+struct LiveBadge: View {
+    let interval: Int
+    @State private var pulse = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(Theme.ai)
+                .frame(width: 6, height: 6)
+                .opacity(pulse ? 0.25 : 1)
+                .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: pulse)
+            Text("EN VIVO · \(interval) s")
+                .font(.caption2.weight(.bold))
+        }
+        .foregroundStyle(Theme.ai)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(Theme.ai.opacity(0.14), in: Capsule())
+        .onAppear { pulse = true }
+        .help("El resumen y las preguntas clave se actualizan solos mientras escuchas")
     }
 }
 
@@ -1072,6 +1225,7 @@ struct FullView: View {
             Button("Guardar transcripción…", systemImage: "square.and.arrow.down") { state.saveMeetingTxt() }
             Button("Copiar transcripción", systemImage: "doc.on.doc") { state.copyAll() }
             Button("Abrir carpeta de logs", systemImage: "folder") { state.openLogsFolder() }
+            Button("Editar contexto de la IA…", systemImage: "brain") { state.openAIContext() }
             Divider()
             Toggle("Siempre encima", isOn: $state.alwaysOnTop)
             Toggle("Atenuar al quitar el ratón", isOn: $state.dimWhenIdle)
@@ -1184,9 +1338,15 @@ struct FullView: View {
     private var summaryPanel: some View {
         Panel(title: "Resumen IA", systemImage: "sparkles", tint: Theme.ai) {
             HStack(spacing: 6) {
-                if state.isSummarizing {
+                if state.autoSummary && state.isListening {
+                    LiveBadge(interval: state.liveInterval)
+                }
+                if state.isWarmingAI {
                     ProgressView().controlSize(.small)
-                    Text("Generando…").font(.caption).foregroundStyle(.secondary)
+                    Text("Cargando Qwen…").font(.caption).foregroundStyle(.secondary)
+                } else if state.isSummarizing {
+                    ProgressView().controlSize(.small)
+                    Text("Actualizando…").font(.caption).foregroundStyle(.secondary)
                 } else if let updated = state.summaryUpdatedAt {
                     Text("Actualizado \(updated)").font(.caption).foregroundStyle(.secondary)
                 }
@@ -1201,19 +1361,22 @@ struct FullView: View {
             }
         } content: {
             ScrollView {
-                Group {
+                VStack(alignment: .leading, spacing: 10) {
+                    // Errors show above the last good summary instead of hiding it.
                     if let error = state.summaryError {
                         Label(error, systemImage: "exclamationmark.triangle")
+                            .font(.callout)
                             .foregroundStyle(Color.orange)
-                    } else if state.liveSummary.isEmpty {
+                    }
+                    if !state.liveSummary.isEmpty {
+                        MarkdownText(markdown: state.liveSummary, fontSize: state.transcriptFontSize)
+                    } else if state.summaryError == nil {
                         Text(
                             state.autoSummary
-                                ? "El resumen se genera solo cada pocos bloques de transcripción, o pulsa ↻."
+                                ? "El resumen se escribe solo mientras escuchas (cada \(state.liveInterval) s) y saca las preguntas clave al panel de abajo. También puedes pulsar ↻."
                                 : "Pulsa ↻ para generar el resumen de lo transcrito."
                         )
                         .foregroundStyle(.secondary)
-                    } else {
-                        MarkdownText(markdown: state.liveSummary, fontSize: state.transcriptFontSize)
                     }
                 }
                 .padding(14)
@@ -1236,12 +1399,20 @@ struct FullView: View {
             }
         } content: {
             VStack(spacing: 0) {
+                if !state.keyQuestions.isEmpty {
+                    keyQuestionsList
+                    Divider().opacity(0.5)
+                }
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 10) {
                             if state.qaItems.isEmpty {
-                                Text("Pregunta lo que quieras sobre la reunión: «¿qué se decidió?», «¿qué tareas tengo?»…")
-                                    .foregroundStyle(.secondary)
+                                Text(
+                                    state.keyQuestions.isEmpty
+                                        ? "Aquí aparecen las preguntas clave que se escuchen en el audio. También puedes preguntar lo que quieras: «what was decided?», «what are my action items?»…"
+                                        : "Toca una pregunta detectada para que la IA la responda con lo dicho en la reunión, o escribe la tuya."
+                                )
+                                .foregroundStyle(.secondary)
                             }
                             ForEach(state.qaItems) { item in
                                 QARow(item: item, fontSize: state.transcriptFontSize)
@@ -1276,6 +1447,38 @@ struct FullView: View {
                 .padding(10)
             }
         }
+    }
+
+    /// Key questions extracted from the audio by the live summary; tapping one
+    /// asks Qwen to answer it from the transcript.
+    private var keyQuestionsList: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("DETECTADAS EN EL AUDIO")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.secondary)
+            ForEach(Array(state.keyQuestions.enumerated()), id: \.offset) { item in
+                Button {
+                    state.ask(item.element)
+                } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Image(systemName: "questionmark.circle.fill")
+                            .foregroundStyle(Theme.qa)
+                        Text(MarkdownText.inline(item.element))
+                            .font(.system(size: CGFloat(max(12, state.transcriptFontSize - 2))))
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Image(systemName: "arrow.right.circle")
+                            .foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Pedir a la IA que la responda con lo dicho en la reunión")
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.qa.opacity(0.07))
     }
 
     private var footer: some View {
@@ -1319,12 +1522,20 @@ struct SettingsPopover: View {
                     }
                 }
             }
-            Section("Resumen y preguntas (IA local)") {
-                Picker("Idioma de respuesta", selection: $state.summaryLang) {
-                    Text("Español").tag("es")
+            Section("IA local (Qwen)") {
+                Picker("Idioma de las respuestas", selection: $state.summaryLang) {
                     Text("Inglés").tag("en")
+                    Text("Español").tag("es")
                 }
-                Toggle("Actualizar el resumen automáticamente", isOn: $state.autoSummary)
+                Toggle("Resumen y preguntas clave en vivo", isOn: $state.autoSummary)
+                Picker("Actualizar cada", selection: $state.liveInterval) {
+                    Text("15 s").tag(15)
+                    Text("30 s").tag(30)
+                    Text("1 min").tag(60)
+                    Text("2 min").tag(120)
+                }
+                .disabled(!state.autoSummary)
+                Button("Editar contexto de la IA (qwen_context.txt)…") { state.openAIContext() }
             }
             Section("Alertas") {
                 TextField("Palabras clave", text: $state.alerts, prompt: Text("julian, deadline, urgente"))
@@ -1458,7 +1669,10 @@ struct ContentView: View {
             }
         }
         .background(WindowReader { window in windowBox.window = window })
-        .onAppear { state.applyOnTop() }
+        .onAppear {
+            state.applyOnTop()
+            state.prewarm()
+        }
         .onHover { hovering in windowBox.setDimmed(state.dimWhenIdle && !hovering) }
         .onChange(of: state.dimWhenIdle) { _, enabled in
             if !enabled { windowBox.setDimmed(false) }

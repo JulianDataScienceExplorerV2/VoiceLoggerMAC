@@ -82,6 +82,13 @@ Idiomas disponibles en la GUI: Inglés, Auto-detectar, Español, Portugués.
 
 El botón "Resumen IA" usa `mlx-community/Qwen2.5-1.5B-Instruct-4bit` (definido en `summarizer.py`). También se descarga solo la primera vez que pulsas el botón.
 
+### Contexto para la IA (`qwen_context.txt`)
+
+Los resúmenes y respuestas anteponen el texto de `qwen_context.txt` (raíz del repo) como system prompt,
+p. ej. `You are an expert in data analytics…`. Se crea desde `qwen_context.example.txt` la primera vez,
+se relee en cada petición y no se sube a git (puede tener nombres o proyectos privados). Se ignoran las
+líneas que empiezan por `#` y las que aún tengan `XXXX`.
+
 ### Descarga manual opcional (pre-descargar)
 
 Si prefieres descargar los modelos antes de abrir la app:

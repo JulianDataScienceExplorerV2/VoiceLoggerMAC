@@ -82,6 +82,13 @@ Languages available in the GUI: English, Auto-detect, Spanish, Portuguese.
 
 The "AI Summary" button uses `mlx-community/Qwen2.5-1.5B-Instruct-4bit` (defined in `summarizer.py`). It is also downloaded only the first time you press the button.
 
+### Context file for the AI (`qwen_context.txt`)
+
+Summaries and answers prepend the text in `qwen_context.txt` (repo root) as a system prompt, e.g.
+`You are an expert in data analytics…`. It is created from `qwen_context.example.txt` the first time,
+is re-read on every request and is git-ignored (it may contain private names/projects). Lines starting
+with `#` and lines still containing `XXXX` are ignored.
+
 ### Optional manual download (pre-download)
 
 If you prefer to download the models before opening the app:

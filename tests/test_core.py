@@ -1,6 +1,8 @@
 """Pruebas del núcleo (sin Qt ni MLX): `python3 -m unittest discover -s tests`."""
 import io
+import json
 import os
+import tempfile
 import sys
 import time
 import unittest
@@ -113,6 +115,114 @@ class CliTests(unittest.TestCase):
             code, _, err = self._run(["ask", "--question", "hola"], "texto")
         self.assertEqual(code, 1)
         self.assertIn("boom", err)
+
+
+class ContextFileTests(unittest.TestCase):
+    def test_ignores_comments_and_unfilled_placeholders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "ctx.txt")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("# comentario\nYou are an expert in XXXXXXXX.\nYou are an expert in data analytics.\n\nBe concise.\n")
+            self.assertEqual(
+                summarizer.load_context(path, example_path=""),
+                "You are an expert in data analytics.\n\nBe concise.",
+            )
+
+    def test_creates_file_from_example(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "ctx.txt")
+            example = os.path.join(tmp, "example.txt")
+            with open(example, "w", encoding="utf-8") as f:
+                f.write("Be concise.\n")
+            self.assertEqual(summarizer.load_context(path, example_path=example), "Be concise.")
+            self.assertTrue(os.path.exists(path))
+
+    def test_repo_template_has_placeholders_disabled(self):
+        context = summarizer.load_context(
+            os.path.join(tempfile.mkdtemp(), "ctx.txt"), example_path=summarizer.CONTEXT_EXAMPLE_FILE
+        )
+        self.assertNotIn("XXXX", context)
+        self.assertIn("concise", context)
+
+    def test_system_prompt_uses_context_and_language(self):
+        with mock.patch.object(summarizer, "load_context", return_value="You are an expert in fintech."):
+            prompt = summarizer._system_prompt("en")
+        self.assertTrue(prompt.startswith("You are an expert in fintech."))
+        self.assertIn("Always answer in English", prompt)
+        with mock.patch.object(summarizer, "load_context", return_value=""):
+            self.assertIn("Responde SIEMPRE en español", summarizer._system_prompt("es"))
+
+
+class KeyQuestionsTests(unittest.TestCase):
+    def test_extracts_questions_and_removes_section(self):
+        md = (
+            "## Summary\nWe reviewed Q3.\n"
+            "## Key questions\n- Do we ship before the freeze?\n* Who owns the fix?\n1. What about pricing?\n"
+            "## Decisions\n- Ship it"
+        )
+        summary, questions = summarizer.split_key_questions(md)
+        self.assertEqual(questions, ["Do we ship before the freeze?", "Who owns the fix?", "What about pricing?"])
+        self.assertNotIn("Key questions", summary)
+        self.assertIn("## Decisions\n- Ship it", summary)
+
+    def test_filters_empty_answers(self):
+        for filler in ["- None", "- N/A.", "- No questions were raised yet.", "- (bullets)", "- Ninguna"]:
+            _, questions = summarizer.split_key_questions(f"## Preguntas clave\n{filler}\n## Decisiones\n- x")
+            self.assertEqual(questions, [], filler)
+
+    def test_limit(self):
+        md = "## Key questions\n" + "\n".join(f"- Q{i}?" for i in range(10))
+        self.assertEqual(len(summarizer.split_key_questions(md, limit=3)[1]), 3)
+
+
+class LiveInsightsTests(unittest.TestCase):
+    def test_full_text_goes_to_model_and_questions_are_split(self):
+        md = "## Summary\nOk.\n## Key questions\n- Why?\n"
+        with mock.patch.object(summarizer, "_run_live", return_value=md) as fake:
+            result = summarizer.live_insights(text="[10:00] hi", language="en")
+        fake.assert_called_once_with("[10:00] hi", "", "", "en")
+        self.assertEqual(result, {"markdown": md.strip(), "summary": "## Summary\nOk.", "questions": ["Why?"]})
+
+    def test_nothing_new_returns_previous_without_model(self):
+        with mock.patch.object(summarizer, "_run_live") as fake:
+            result = summarizer.live_insights(previous="## Summary\nOld", new_text="  ")
+        fake.assert_not_called()
+        self.assertEqual(result["summary"], "## Summary\nOld")
+
+    def test_no_text_at_all_fails(self):
+        with self.assertRaises(ValueError):
+            summarizer.live_insights()
+
+
+class ServeTests(unittest.TestCase):
+    def _serve(self, *lines):
+        out = io.StringIO()
+        summarizer.serve(stdin=io.StringIO("\n".join(lines) + "\n"), stdout=out)
+        return [json.loads(line) for line in out.getvalue().splitlines()]
+
+    def test_live_and_ask_round_trip(self):
+        live = {"markdown": "m", "summary": "s", "questions": ["q?"]}
+        with mock.patch.object(summarizer, "live_insights", return_value=live), \
+                mock.patch.object(summarizer, "ask_question", return_value="42"):
+            replies = self._serve(
+                json.dumps({"id": "a", "type": "live", "text": "hola", "lang": "en"}),
+                "",
+                json.dumps({"id": "b", "type": "ask", "text": "hola", "question": "¿qué?", "lang": "en"}),
+            )
+        self.assertEqual(replies, [
+            {"id": "a", "ok": True, "result": live},
+            {"id": "b", "ok": True, "result": {"answer": "42"}},
+        ])
+
+    def test_errors_do_not_stop_the_server(self):
+        replies = self._serve(
+            "esto no es json",
+            json.dumps({"id": "x", "type": "nope"}),
+            json.dumps({"id": "y", "type": "ask", "text": "", "question": "hola"}),
+        )
+        self.assertEqual([r["ok"] for r in replies], [False, False, False])
+        self.assertEqual([r["id"] for r in replies], [None, "x", "y"])
+        self.assertIn("unknown request type", replies[1]["error"])
 
 
 def _tone(seconds, amp=0.1, freq=220.0):

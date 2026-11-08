@@ -65,6 +65,8 @@ transcripcion_*.txt
 transcripcion_*.jsonl
 reunion_*.txt
 resumen_reunion_*.md
+# Contexto personal de la IA (puede tener nombres/proyectos); la plantilla sí se sube
+qwen_context.txt
 
 # Local models / caches
 .cache/

@@ -927,7 +927,7 @@ class VoiceLoggerWindow(QMainWindow):
             self._select_combo(self.combo_source, q.value("source", "system"))
             self._select_combo(self.combo_model, q.value("model", DEFAULT_MODEL))
             self._select_combo(self.combo_lang, q.value("language", "en"))
-            self._select_combo(self.combo_summary_lang, q.value("summary_lang", "es"))
+            self._select_combo(self.combo_summary_lang, q.value("summary_lang", "en"))
             self.edit_context.setText(str(q.value("context", "")))
             self.edit_alerts.setText(str(q.value("alerts", "")))
             try:

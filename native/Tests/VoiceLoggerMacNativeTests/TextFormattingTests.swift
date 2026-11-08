@@ -37,4 +37,11 @@ final class TextFormattingTests: XCTestCase {
         XCTAssertEqual(PythonBridge.lastMeaningfulLine(of: log), "ModuleNotFoundError: No module named 'mlx_lm'")
         XCTAssertNil(PythonBridge.lastMeaningfulLine(of: "\n  \n"))
     }
+
+    func testLineBufferJoinsChunksIntoLines() {
+        let buffer = LineBuffer()
+        XCTAssertEqual(buffer.append(Data("{\"id\":\"a\"}\n{\"id\"".utf8)), [Data("{\"id\":\"a\"}".utf8)])
+        XCTAssertEqual(buffer.append(Data(":\"b\"}\n\n".utf8)), [Data("{\"id\":\"b\"}".utf8)])
+        XCTAssertEqual(buffer.append(Data()), [])
+    }
 }

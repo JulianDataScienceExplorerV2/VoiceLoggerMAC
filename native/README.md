@@ -14,9 +14,11 @@ Versión nativa para macOS en SwiftUI, conviviendo con la app Python/PySide6 de 
 - [x] Interfaz de lectura: barra superior de una sola línea, transcripción a la izquierda y **Resumen IA** + **Preguntas** apilados a la derecha (paneles redimensionables)
 - [x] Ajustes en un popover (⚙), subtítulos flotantes arrastrables, modo compacto, ventana siempre encima, atajos en el menú *Sesión*
 - [x] Resumen y preguntas con Qwen local vía `summarizer.py` (puente Python, sin rutas fijas)
+- [x] **Resumen en vivo** incremental + **preguntas clave detectadas en el audio**, con Qwen cargado una sola vez en un proceso persistente
+- [x] Contexto/persona para Qwen en `qwen_context.txt` (se relee en cada petición)
 - [ ] Micrófono como fuente (hoy solo audio del sistema)
 - [ ] Contexto/vocabulario para WhisperKit (`promptTokens`)
-- [ ] Resumen 100 % nativo (Foundation Models o MLX Swift) y proceso Python persistente
+- [ ] Resumen 100 % nativo (Foundation Models o MLX Swift)
 - [ ] Bundle `.app` firmado/notarizado + DMG
 
 ## Interfaz
@@ -27,7 +29,7 @@ Versión nativa para macOS en SwiftUI, conviviendo con la app Python/PySide6 de 
 │ Transcripción          🔍 Filtrar A- A+│ ✨ Resumen IA        Actualizado ↻ │
 │                                      │                                   │
 │  10:02:11 EN                         ├───────────────────────────────────┤
-│  Texto grande y seleccionable…       │ ? Preguntas                       │
+│  Texto grande y seleccionable…       │ ? Preguntas  (clave del audio + tuyas)│
 │                                      │  ¿Qué se decidió? → respuesta     │
 │                                      │  [Pregunta algo…            ➤]    │
 └──────────────────────────────────────┴───────────────────────────────────┘
@@ -35,11 +37,34 @@ Versión nativa para macOS en SwiftUI, conviviendo con la app Python/PySide6 de 
 
 Atajos: ⌘↩ iniciar/detener · ⌘⇧P pausar · ⌘S guardar TXT · ⌘⇧C copiar · ⌘R actualizar resumen · ⌘F filtrar · ⌘+ / ⌘- tamaño de letra.
 
-## Resumen y preguntas (puente Python)
+## IA en vivo: resumen + preguntas clave (Qwen local)
 
-El resumen y las preguntas usan el modelo Qwen de la app Python. La app nativa ejecuta
-`.venv/bin/python summarizer.py summary|ask` y le pasa la transcripción por stdin.
-Busca la raíz del repo en este orden:
+- Al pulsar **Iniciar**, la app arranca `summarizer.py serve`: un proceso Python que carga
+  Qwen **una sola vez** y lo deja en memoria (~1 GB con el modelo 1.5B 4-bit). Habla con la
+  app por JSON, una línea por mensaje; se cierra solo al salir de la app. Su log queda en
+  `~/Library/Application Support/VoiceLoggerMac/qwen_server.log`.
+- **En vivo**: cada *N* segundos (15 s / 30 s / 1 min / 2 min, en ⚙) si hay texto nuevo.
+  Nunca se solapan dos actualizaciones y el intervalo cuenta desde que termina la anterior.
+- **Incremental**: mientras la reunión cabe en una pasada (~12 000 caracteres) el acta se
+  rehace entera; después se actualiza con *notas anteriores + solo lo nuevo*, así cada
+  actualización cuesta lo mismo a los 5 minutos que a las 2 horas.
+- **Preguntas clave**: salen del propio resumen y se muestran arriba del panel *Preguntas*.
+  Al tocar una, Qwen la responde con lo dicho en la reunión.
+- Whisper también se precarga al abrir la app; los archivos de ambos modelos ya quedan en la
+  caché de disco tras la primera descarga.
+- Respuestas en **inglés** por defecto (⚙ → *Idioma de las respuestas*).
+- Otro modelo, si tienes RAM: `VOICELOGGER_QWEN_MODEL=mlx-community/Qwen2.5-3B-Instruct-4bit`.
+
+### Contexto / persona: `qwen_context.txt`
+
+En la raíz del repo (⋯ → *Editar contexto de la IA…* lo abre). Va antes de cada resumen y
+pregunta, como un system prompt. Se crea desde `qwen_context.example.txt` la primera vez y
+**no se sube a git**. Las líneas con `#` y las que aún tengan `XXXX` se ignoran: rellena
+`You are an expert in XXXXXXXX…` y se activa sola en la siguiente respuesta.
+
+### Dónde encuentra Python
+
+La app ejecuta `.venv/bin/python summarizer.py serve`. Busca la raíz del repo en este orden:
 
 1. Variable de entorno `VOICELOGGER_ROOT`
 2. `defaults write VoiceLoggerMacNative python_root /ruta/al/repo`
@@ -47,6 +72,12 @@ Busca la raíz del repo en este orden:
 4. `~/Desktop/VoiceLoggerMac` y `~/VoiceLoggerMac`
 
 Necesita haber ejecutado `./setup.sh` en la raíz (crea `.venv` con `mlx-lm`).
+
+Prueba del protocolo a mano:
+
+```bash
+printf '%s\n' '{"id":"1","type":"live","text":"[10:00] We ship on Friday?","lang":"en"}' | .venv/bin/python summarizer.py serve
+```
 
 ### Prueba real (sin datos personales)
 
