@@ -67,6 +67,8 @@ botones y ajustes; *Letra de lectura* (A- / A+) agranda transcripción, resumen 
   Market antes de estas mejoras: **81,6 %**, con 17 tramos perdidos (393 palabras).
 - Resultados con las mejoras: Borough Market (comiendo, música, mercado) **82,9 % → 87,6 %** en los mismos 20 min;
   charla TED de Simon Sinek (voz clara, transcripción oficial de TED) **91,9 %**, con el 96 % de las palabras igual.
+- Con Whisper afinado (sin marcas de tiempo, máx. 2 reintentos, espectrograma en CPU): Sinek **93,5 %**, el 97,5 % de
+  las palabras igual, **0 tramos perdidos**; 136 bloques, ninguno descartado, ~1,1 s por bloque (×7 tiempo real).
 
 ## IA en vivo: resumen + preguntas clave (Qwen local)
 
@@ -237,6 +239,9 @@ modelo pequeño pueden fallar: revisa las fuentes.
 
 ### Calidad de la búsqueda (modo Ideas y Ampliar con internet)
 
+- **Si DuckDuckGo falla** (no responde o pide verificación anti-bots), durante 2 minutos se busca directo en
+  Wikipedia en vez de esperar 8 s a que se venza el tiempo en cada pregunta; si Wikipedia no encuentra nada con la
+  pregunta completa, se reintenta con sus palabras clave. Queda anotado en el log de la sesión.
 - **Sin redes sociales:** la búsqueda va con `-site:pinterest.com -site:facebook.com…` (Instagram, TikTok, X):
   piden login y no aportan. Si así no sale nada, se repite sin filtros.
 - **Sitios preferidos** (⚙, hasta 3, p. ej. `hbr.org, mckinsey.com, who.int`): se busca en cada uno con
@@ -301,10 +306,19 @@ tamaños y conteos, así se puede compartir para depurar.
     1. **Respuesta en vivo:** el texto aparece mientras se escribe («Escribiendo…»), también el complemento de
        Ideas y «Ampliar con internet»; las primeras palabras salen en ~1 s.
     2. **Decodificación especulativa** (⚙ «Acelerar con un modelo ayudante», activada): Qwen3 0.6B (o Qwen2.5 0.5B)
-       propone 3 palabras y el modelo principal las confirma de una vez. Misma calidad, escribe más rápido;
-       +~0,4 GB de RAM y una descarga la primera vez. No aplica a LFM2.5.
-    3. **Memoria de trabajo (KV) en 8 bits** a partir de 1024 tokens: la mitad de memoria en prompts largos
-       (resumen, respuestas con páginas web), casi sin pérdida; los cortos (preguntas en vivo) no cambian.
+       propone 3 palabras y el modelo principal las confirma de una vez. Misma calidad; +~0,4 GB de RAM y una
+       descarga la primera vez. No aplica a LFM2.5. **Solo en prompts cortos (≤ 6000 caracteres)**, según lo medido
+       en un M3 Pro (log de sesión, video de Sinek):
+
+       | Petición | Con ayudante | Sin ayudante |
+       |---|---|---|
+       | Preguntas en vivo (~2,8k caracteres) | **78 tok/s** | 43 tok/s |
+       | Resumen incremental (~4k) | **51 tok/s** | 44 tok/s |
+       | Respuestas y complementos largos (>9k) | 22 tok/s | **38 tok/s** |
+
+       Con prompts largos el ayudante también tiene que procesar todo el contexto y acierta menos: ahí va sin él.
+    - La memoria de trabajo (KV) en 8 bits se probó y quedó **apagada**: con prompts de pocos miles de tokens
+      ahorra poca memoria y la atención cuantizada probablemente hacía lento el arranque de los prompts largos.
     - La caché del prompt fijo (procesar las instrucciones una sola vez) queda pendiente: `ChatSession.fork` aún no
       está en la versión publicada de MLX Swift.
     - Si alguna optimización falla en tu Mac, esa respuesta se repite en modo normal y el modelo sigue así hasta

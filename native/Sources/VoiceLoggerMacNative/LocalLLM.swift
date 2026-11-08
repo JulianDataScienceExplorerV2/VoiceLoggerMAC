@@ -17,11 +17,15 @@ typealias PartialText = @Sendable (String) -> Void
 /// Optimizations (things the Python engine did not do):
 /// 1. **Streaming**: the answer is passed on while it is written (`partial`),
 ///    so the first words show up in about a second.
-/// 2. **Speculative decoding**: a small model of the same family proposes a few
-///    tokens and the main model checks them in one pass. Same output quality,
-///    faster writing; ~0.4 GB more RAM. Off if the helper cannot be loaded.
-/// 3. **8-bit KV cache** past 1024 tokens: about half the working memory of long
-///    prompts (live summary, answers with web pages), nearly lossless.
+/// 2. **Speculative decoding** on short prompts: a small model of the same
+///    family proposes a few tokens and the main model checks them in one pass.
+///    Measured on an M3 Pro (session log): live questions 78 vs 43 tok/s,
+///    summaries 51 vs 44; but answers over long prompts (meeting notes +
+///    transcript + web pages, >9k characters) 22 vs 38 tok/s, so those go
+///    without it. ~0.4 GB more RAM. Off if the helper cannot be loaded.
+/// (An 8-bit KV cache was tried too; it is off: the prompts here are at most a
+/// few thousand tokens, so it saves little memory, and quantized attention
+/// is likely what made long prompts slow to start.)
 ///
 /// Memory: prompt prefill in 512-token steps, MLX buffer cache capped at
 /// 512 MB and emptied after each answer (as in `summarizer.py`).
@@ -47,8 +51,11 @@ actor LocalLLM {
     ]
     /// Tokens the helper proposes per check (3 works best for small 4-bit models).
     static let numDraftTokens = 3
-    static let kvBits = 8
-    /// Short prompts (live questions) keep a full-precision cache.
+    /// Prompts (system + user) up to this size use the helper; longer ones
+    /// write faster without it (see above).
+    static let helperMaxPromptChars = 6000
+    /// 8-bit KV cache: nil = off (see above). Set to 8 to try it again.
+    static let kvBits: Int? = nil
     static let quantizedKVStart = 1024
     /// Seconds between partial-text updates (the UI does not need every token).
     static let partialInterval: Duration = .milliseconds(100)
@@ -185,7 +192,7 @@ actor LocalLLM {
         GenerateParameters(
             maxTokens: maxTokens,
             kvBits: quantizeKV ? Self.kvBits : nil,
-            quantizedKVStart: quantizeKV ? Self.quantizedKVStart : 0,
+            quantizedKVStart: quantizeKV && Self.kvBits != nil ? Self.quantizedKVStart : 0,
             temperature: temperature,
             repetitionPenalty: penalizeRepeats ? Self.repetitionPenalty : nil,
             repetitionContextSize: Self.repetitionContext,
@@ -215,13 +222,17 @@ actor LocalLLM {
         defer { Memory.clearCache() }
         if !safeMode {
             do {
-                let speculative = await draftModel().map {
-                    SpeculativeDecodingConfig(draftModel: $0, numDraftTokens: Self.numDraftTokens)
+                let shortPrompt = system.count + user.count <= Self.helperMaxPromptChars
+                var speculative: SpeculativeDecodingConfig?
+                if shortPrompt, let draft = await draftModel() {
+                    speculative = SpeculativeDecodingConfig(draftModel: draft, numDraftTokens: Self.numDraftTokens)
                 }
                 let params = makeParameters(maxTokens: maxTokens, temperature: temperature, penalizeRepeats: penalizeRepeats)
                 // One request = system prompt + one user message, as in Python.
                 let session = newSession(container, system: system, speculative: speculative, parameters: params)
-                let mode = "ayudante \(speculative == nil ? "no" : "sí") · KV 8 bits desde \(Self.quantizedKVStart)"
+                let helper = speculative != nil ? "sí" : (shortPrompt ? "no" : "no (prompt largo)")
+                let kv = Self.kvBits.map { "KV \($0) bits desde \(Self.quantizedKVStart)" } ?? "KV normal"
+                let mode = "ayudante \(helper) · \(kv)"
                 return try await stream(session, user: user, container: container, mode: mode, partial: partial)
             } catch is CancellationError {
                 throw CancellationError()

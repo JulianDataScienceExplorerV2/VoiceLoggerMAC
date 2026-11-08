@@ -312,11 +312,59 @@ enum WebSearch {
         return data
     }
 
+    /// When DuckDuckGo fails (timeout, error, "are you a bot?" page), searches
+    /// skip it for a while and go straight to Wikipedia, instead of waiting
+    /// for the timeout on every question (seen in a session log: 8-11 s each).
+    private actor DuckDuckGoPause {
+        private var until: Date?
+
+        func isPaused() -> Bool {
+            if let until, until > Date() { return true }
+            return false
+        }
+
+        /// True if this call started the pause (to log it once).
+        func pause(for seconds: TimeInterval) -> Bool {
+            let wasPaused = isPaused()
+            until = Date().addingTimeInterval(seconds)
+            return !wasPaused
+        }
+    }
+
+    private static let duckDuckGoPause = DuckDuckGoPause()
+    static let duckDuckGoPauseSeconds: TimeInterval = 120
+
     private static func duckDuckGo(_ query: String) async throws -> [WebResult] {
+        if await duckDuckGoPause.isPaused() {
+            throw Failure(message: "DuckDuckGo en pausa tras un fallo reciente")
+        }
         var components = URLComponents(string: "https://html.duckduckgo.com/html/")!
         components.queryItems = [URLQueryItem(name: "q", value: query)]
-        let data = try await fetch(components.url!)
-        return parseDuckDuckGo(decode(data, encodingName: nil), limit: candidates)
+        let html: String
+        do {
+            html = decode(try await fetch(components.url!), encodingName: nil)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            throw error  // the search was cancelled on purpose: not DuckDuckGo's fault
+        } catch {
+            await pauseDuckDuckGo(reason: error.localizedDescription)
+            throw error
+        }
+        let lowered = html.lowercased()
+        if lowered.contains("anomaly-modal") || lowered.contains("bots use duckduckgo") {
+            await pauseDuckDuckGo(reason: "pidió verificación (anti-bots)")
+            throw Failure(message: "DuckDuckGo pidió verificación")
+        }
+        return parseDuckDuckGo(html, limit: candidates)
+    }
+
+    private static func pauseDuckDuckGo(reason: String) async {
+        if await duckDuckGoPause.pause(for: duckDuckGoPauseSeconds) {
+            SessionLog.shared.log(
+                "WEB", "DuckDuckGo falló (\(reason)): \(Int(duckDuckGoPauseSeconds / 60)) min solo con Wikipedia"
+            )
+        }
     }
 
     private static func wikipedia(_ query: String, language: String, limit: Int) async throws -> [WebResult] {
@@ -573,7 +621,14 @@ enum WebSearch {
 
         if results.count < 2 {
             do {
-                results = rank(results + (try await wikipedia(query, language: language, limit: limit)), sites: siteList)
+                var found = try await wikipedia(query, language: language, limit: limit)
+                // Wikipedia's search often finds nothing for a whole question:
+                // try again with its keywords only.
+                let keywords = MeetingMemoryStore.tokenize(query).prefix(6).joined(separator: " ")
+                if found.isEmpty, !keywords.isEmpty, keywords != query.lowercased() {
+                    found = try await wikipedia(keywords, language: language, limit: limit)
+                }
+                results = rank(results + found, sites: siteList)
             } catch {
                 if results.isEmpty, failure != nil {
                     throw Failure(message: "No pude buscar en internet (\(error.localizedDescription)).")
