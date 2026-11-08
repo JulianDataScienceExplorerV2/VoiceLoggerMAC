@@ -20,7 +20,9 @@ It uses **MLX Whisper** on Apple Silicon, system-audio capture via **ScreenCaptu
 - **Long meetings without filling your RAM**: on-disk meeting memory + fixed token budgets per prompt; Qwen unloads itself when idle.
 - **`qwen_context.txt`**: persona/context for the AI (“You are an expert in …”).
 - **Live text speed** (Fast / Normal / Precise), interface size, reading font, floating captions, compact mode, always on top, keyword alerts, Whisper and Qwen model pickers, keyboard shortcuts.
-- 100 % local: audio, transcript and AI never leave your Mac.
+- **Summary tabs**: Summary (default) · Questions · Tasks.
+- 🌐 **Extend with the web** (optional, per answer): searches only the question text on DuckDuckGo/Wikipedia and cites sources.
+- Local: audio, transcript and AI stay on your Mac (only the 🌐 button sends the question text to a search engine).
 
 Requirements: macOS 15+, Apple Silicon, Xcode 16 (Swift 6). The AI side reuses this repo's Python environment:
 
@@ -159,6 +161,7 @@ Logs are saved locally in `logs/transcripcion_YYYY-MM-DD.txt` and `.jsonl`.
 ├── transcriber.py        # MLX Whisper transcription
 ├── summarizer.py         # Local AI summary with Qwen (mlx-lm)
 ├── meeting_memory.py     # On-disk meeting memory for the AI (BM25 retrieval)
+├── web_search.py         # Optional web search for "Extend with the web" (DuckDuckGo/Wikipedia)
 ├── logger.py             # TXT/JSONL logging in logs/
 ├── history_dialog.py     # History and MD/PDF export
 ├── benchmark.py          # Whisper model benchmark

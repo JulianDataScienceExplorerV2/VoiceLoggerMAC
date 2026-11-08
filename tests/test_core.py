@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from audio_capture import CHUNK_SAMPLES, SAMPLE_RATE, PhraseSegmenter, prepare_phrase  # noqa: E402
 import summarizer  # noqa: E402
+import web_search  # noqa: E402
 from meeting_memory import MeetingMemory, tokenize  # noqa: E402
 from summarizer import _tail_text, split_text  # noqa: E402
 from transcriber import extract_text, is_bad_transcript  # noqa: E402
@@ -183,7 +184,8 @@ class LiveInsightsTests(unittest.TestCase):
         with mock.patch.object(summarizer, "_run_live", return_value=md) as fake:
             result = summarizer.live_insights(text="[10:00] hi", language="en")
         fake.assert_called_once_with("[10:00] hi", "", "", "en")
-        self.assertEqual(result, {"markdown": md.strip(), "summary": "## Summary\nOk.", "questions": ["Why?"]})
+        self.assertEqual(result, {"markdown": md.strip(), "summary": "## Summary\nOk.", "questions": ["Why?"],
+                                  "action_items": []})
 
     def test_nothing_new_returns_previous_without_model(self):
         with mock.patch.object(summarizer, "_run_live") as fake:
@@ -317,6 +319,108 @@ class TasksTests(unittest.TestCase):
     def test_tasks_without_text_fails(self):
         with self.assertRaises(ValueError):
             summarizer.extract_tasks("", "  ")
+
+
+class SummaryTabsTests(unittest.TestCase):
+    def test_live_splits_summary_questions_and_tasks(self):
+        md = ("## Summary\nQ3 review.\n## Key questions\n- Ship before freeze?\n"
+              "## Decisions\n- Ship it\n## Action items\n- Julian: fix copy by Friday\n- None\n")
+        with mock.patch.object(summarizer, "_run_live", return_value=md):
+            result = summarizer.live_insights(text="[10:00] x")
+        self.assertEqual(result["summary"], "## Summary\nQ3 review.\n## Decisions\n- Ship it")
+        self.assertEqual(result["questions"], ["Ship before freeze?"])
+        self.assertEqual(result["action_items"], ["Julian: fix copy by Friday"])
+        self.assertEqual(result["markdown"], md.strip())  # full notes kept for the next update
+
+    def test_spanish_headings(self):
+        md = "## Resumen\nX\n## Tareas / pendientes\n1. Enviar acta\n## Preguntas clave\n- ¿Fecha?"
+        rest, tasks = summarizer.split_action_items(md)
+        self.assertEqual(tasks, ["Enviar acta"])
+        self.assertNotIn("Tareas", rest)
+
+
+DDG_SAMPLE = """
+<div class="result results_links results_links_deep web-result">
+  <h2 class="result__title"><a rel="nofollow" class="result__a"
+     href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fopenai.com%2Findex%2Fwhisper%2F&amp;rut=abc">Introducing <b>Whisper</b></a></h2>
+  <a class="result__snippet" href="#">Whisper is a <b>speech recognition</b> model &amp; more.</a>
+</div>
+<div class="result result--ad"><a class="result__a" href="https://duckduckgo.com/y.js?ad=1">Ad</a></div>
+<div class="result"><h2><a class="result__a" href="https://github.com/openai/whisper">openai/whisper</a></h2>
+  <div class="result__snippet">Robust Speech Recognition via Large-Scale Weak Supervision</div></div>
+"""
+
+WIKI_SAMPLE = json.dumps({"query": {"pages": {
+    "2": {"index": 2, "title": "Speech recognition", "fullurl": "https://en.wikipedia.org/wiki/Speech_recognition",
+          "extract": "Speech recognition is an interdisciplinary subfield."},
+    "1": {"index": 1, "title": "Whisper (speech recognition system)",
+          "fullurl": "https://en.wikipedia.org/wiki/Whisper_(speech_recognition_system)",
+          "extract": "Whisper is a machine learning model for speech recognition."},
+}}})
+
+
+class WebSearchTests(unittest.TestCase):
+    def test_parse_duckduckgo_unwraps_links_and_skips_ads(self):
+        results = web_search.parse_duckduckgo(DDG_SAMPLE)
+        self.assertEqual([r["url"] for r in results], ["https://openai.com/index/whisper/", "https://github.com/openai/whisper"])
+        self.assertEqual(results[0]["title"], "Introducing Whisper")
+        self.assertEqual(results[0]["snippet"], "Whisper is a speech recognition model & more.")
+
+    def test_parse_wikipedia_keeps_ranking(self):
+        results = web_search.parse_wikipedia(WIKI_SAMPLE)
+        self.assertEqual(results[0]["title"], "Whisper (speech recognition system)")
+        self.assertIn("machine learning model", results[0]["snippet"])
+
+    def test_falls_back_to_wikipedia_when_duckduckgo_fails(self):
+        calls = []
+
+        def fetch(url):
+            calls.append(url)
+            if "duckduckgo" in url:
+                raise OSError("blocked")
+            self.assertIn("es.wikipedia.org", url)
+            return WIKI_SAMPLE
+
+        results = web_search.search("whisper", language="es", fetch=fetch)
+        self.assertEqual(len(results), 2)
+        self.assertEqual(len(calls), 2)
+
+    def test_only_the_question_goes_out(self):
+        seen = []
+        web_search.search("¿Qué es Whisper?", fetch=lambda url: seen.append(url) or DDG_SAMPLE)
+        self.assertTrue(all("Whisper" in url for url in seen))
+
+    def test_all_sources_down_raises(self):
+        def fetch(url):
+            raise OSError("offline")
+        with self.assertRaises(web_search.WebSearchError):
+            web_search.search("whisper", fetch=fetch)
+
+
+class ExtendWithWebTests(unittest.TestCase):
+    def test_extend_cites_sources(self):
+        results = [{"title": "Whisper", "url": "https://openai.com/w", "snippet": "ASR model"}]
+        with mock.patch.object(summarizer, "_generate", return_value="Meeting: X. Web: ASR [1].") as fake, \
+                mock.patch.object(summarizer, "load_context", return_value=""), \
+                mock.patch.object(summarizer, "_ensure_model"):
+            reply = summarizer.extend_with_web("What is Whisper?", previous="They use Whisper.", notes="## Summary\nY",
+                                               language="en", search=lambda q, language: results)
+        self.assertEqual(reply, {"answer": "Meeting: X. Web: ASR [1].", "sources": [{"title": "Whisper", "url": "https://openai.com/w"}]})
+        prompt = fake.call_args[0][1]
+        self.assertIn("Answer based on the meeting:\nThey use Whisper.", prompt)
+        self.assertIn("[1] Whisper — https://openai.com/w\nASR model", prompt)
+
+    def test_no_results(self):
+        reply = summarizer.extend_with_web("x", language="es", search=lambda q, language: [])
+        self.assertEqual(reply["sources"], [])
+        self.assertIn("No encontré", reply["answer"])
+
+    def test_serve_extend(self):
+        with mock.patch.object(summarizer, "extend_with_web", return_value={"answer": "a", "sources": []}) as fake:
+            reply = summarizer.handle_request({"type": "extend", "question": "q", "previous": "p", "notes": "n",
+                                               "lang": "en", "detail": "short"})
+        self.assertEqual(reply, {"answer": "a", "sources": []})
+        fake.assert_called_once_with("q", "p", "n", "en", "short")
 
 
 class FitTokensTests(unittest.TestCase):

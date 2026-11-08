@@ -15,6 +15,9 @@ struct QAItem: Identifiable, Equatable {
     let question: String
     var answer: String?
     var failed = false
+    /// Web pages cited by an answer extended with "Ampliar con internet".
+    var sources: [WebSource] = []
+    var fromWeb = false
 }
 
 /// Qwen models for the summary / questions (MLX 4-bit, downloaded once to the
@@ -86,6 +89,12 @@ final class AppState: ObservableObject {
     @Published var isWarmingAI = false
     /// Most important questions heard so far, extracted with the live summary.
     @Published var keyQuestions: [String] = []
+    /// Action items from the live summary ("Tareas" tab).
+    @Published var actionItems: [String] = []
+    /// Summary panel tab: "summary" (default), "questions", "tasks".
+    @Published var summaryTab = "summary"
+    /// Show the 🌐 "Ampliar con internet" button (sends only the question).
+    @Published var allowWebSearch = true { didSet { save() } }
     /// Transcript fragments saved in the meeting memory on disk.
     @Published var memorySegments = 0
     @Published var qaQuestion = ""
@@ -573,6 +582,7 @@ final class AppState: ObservableObject {
                 self.liveMarkdown = insights.markdown
                 self.liveSummary = insights.summary
                 self.keyQuestions = insights.questions
+                self.actionItems = insights.actionItems
                 self.summarizedText = full
                 self.summaryUpdatedAt = Self.clock()
             case .failure(let error):
@@ -750,12 +760,17 @@ final class AppState: ObservableObject {
         }
         if !meetingTasks.isEmpty {
             md += ["", "## Tareas", ""] + meetingTasks.map(\.markdownLine)
+        } else if !actionItems.isEmpty {
+            md += ["", "## Tareas", ""] + actionItems.map { "- [ ] \($0)" }
         }
         let answered = qaItems.filter { $0.answer != nil && !$0.failed }
         if !answered.isEmpty {
             md += ["", "## Preguntas y respuestas"]
             for item in answered {
-                md += ["", "### \(item.question)", "", item.answer ?? ""]
+                md += ["", "### \(item.fromWeb ? "🌐 " : "")\(item.question)", "", item.answer ?? ""]
+                for (index, source) in item.sources.enumerated() {
+                    md.append("\(index + 1). [\(source.title)](\(source.url))")
+                }
             }
         }
         md += ["", "## Transcripción", ""]
@@ -917,6 +932,65 @@ final class AppState: ObservableObject {
         toast(message)
     }
 
+    var summaryTabIsEmpty: Bool {
+        switch summaryTab {
+        case "questions": return keyQuestions.isEmpty
+        case "tasks": return actionItems.isEmpty
+        default: return liveSummary.isEmpty
+        }
+    }
+
+    /// Copies what the selected summary tab shows.
+    func copySummaryTab() {
+        switch summaryTab {
+        case "questions":
+            copyText(keyQuestions.map { "- \($0)" }.joined(separator: "\n"), message: "Preguntas copiadas")
+        case "tasks":
+            copyText(actionItems.map { "- [ ] \($0)" }.joined(separator: "\n"), message: "Tareas copiadas")
+        default:
+            copySummary()
+        }
+    }
+
+    /// Re-asks `item` with web results (DuckDuckGo / Wikipedia). Only the
+    /// question text leaves the Mac; the answer appears as a new 🌐 item.
+    func extendWithWeb(_ item: QAItem) {
+        guard allowWebSearch, let previous = item.answer, !item.failed else { return }
+        guard !qaItems.contains(where: { $0.fromWeb && $0.question == item.question && $0.answer == nil }) else { return }
+        guard let server = resolveServer() else {
+            toast(PythonBridge.missingMessage, kind: "error")
+            return
+        }
+        let webItem = QAItem(question: item.question, fromWeb: true)
+        qaItems.append(webItem)
+        qaRevision += 1
+        let question = item.question
+        let notes = liveMarkdown
+        let lang = summaryLang
+        let detail = longAnswers ? "long" : "short"
+        Task {
+            let answer: String
+            let sources: [WebSource]
+            let failed: Bool
+            do {
+                let result = try await server.extend(question: question, previous: previous, notes: notes, lang: lang, detail: detail)
+                answer = result.answer
+                sources = result.sources
+                failed = false
+            } catch {
+                answer = error.localizedDescription
+                sources = []
+                failed = true
+            }
+            if let index = self.qaItems.firstIndex(where: { $0.id == webItem.id }) {
+                self.qaItems[index].answer = answer.isEmpty ? "—" : answer
+                self.qaItems[index].sources = sources
+                self.qaItems[index].failed = failed
+                self.qaRevision += 1
+            }
+        }
+    }
+
     func copySummary() {
         guard !liveSummary.isEmpty else { return }
         NSPasteboard.general.clearContents()
@@ -932,6 +1006,7 @@ final class AppState: ObservableObject {
         liveMarkdown = ""
         summarizedText = ""
         keyQuestions = []
+        actionItems = []
         // A cleared transcript starts a new memory session (the old file stays on disk).
         sessionID = nil
         segmentEnds = []
@@ -1044,6 +1119,7 @@ final class AppState: ObservableObject {
         d.set(longAnswers, forKey: "long_answers")
         d.set(liveSpeed, forKey: "live_speed")
         d.set(askTasksOnStop, forKey: "ask_tasks_on_stop")
+        d.set(allowWebSearch, forKey: "allow_web_search")
         d.set(showKeyQuestions, forKey: "show_key_questions")
         d.set(uiScale, forKey: "ui_scale")
         d.set(transcriptFontSize, forKey: "font_size")
@@ -1061,7 +1137,7 @@ final class AppState: ObservableObject {
         let keys = [
             "model", "language", "sensitivity", "alerts", "alert_sound", "autoscroll", "ai_lang", "auto_summary",
             "font_size", "always_on_top", "dim_when_idle", "live_interval", "qwen_model", "ui_scale",
-            "long_answers", "live_speed", "show_key_questions", "ask_tasks_on_stop", "python_root",
+            "long_answers", "live_speed", "show_key_questions", "ask_tasks_on_stop", "allow_web_search", "python_root",
         ]
         for key in keys {
             if let value = old.object(forKey: key) { d.set(value, forKey: key) }
@@ -1086,6 +1162,7 @@ final class AppState: ObservableObject {
         longAnswers = d.object(forKey: "long_answers") as? Bool ?? true
         liveSpeed = d.string(forKey: "live_speed") ?? "normal"
         askTasksOnStop = d.object(forKey: "ask_tasks_on_stop") as? Bool ?? true
+        allowWebSearch = d.object(forKey: "allow_web_search") as? Bool ?? true
         showKeyQuestions = d.object(forKey: "show_key_questions") as? Bool ?? true
         uiScale = d.object(forKey: "ui_scale") as? Double ?? 1.15
         transcriptFontSize = max(12, min(28, d.object(forKey: "font_size") as? Int ?? 17))
@@ -1433,9 +1510,15 @@ struct TranscriptRow: View {
 struct QARow: View {
     let item: QAItem
     let fontSize: Int
+    var allowWeb = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if item.fromWeb {
+                Label("Ampliado con internet", systemImage: "globe")
+                    .scaledFont(10, weight: .bold)
+                    .foregroundStyle(Theme.qa)
+            }
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Image(systemName: "person.fill")
                     .scaledFont(12)
@@ -1457,12 +1540,38 @@ struct QARow: View {
                             .font(.system(size: CGFloat(fontSize) - 2))
                             .foregroundStyle(Color.orange)
                     } else {
-                        MarkdownText(markdown: answer, fontSize: fontSize, accent: Theme.qa)
+                        VStack(alignment: .leading, spacing: 8) {
+                            MarkdownText(markdown: answer, fontSize: fontSize, accent: Theme.qa)
+                            if !item.sources.isEmpty {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("Fuentes").scaledFont(10, weight: .bold).foregroundStyle(.secondary)
+                                    ForEach(Array(item.sources.enumerated()), id: \.offset) { source in
+                                        if let url = URL(string: source.element.url) {
+                                            Link("[\(source.offset + 1)] \(source.element.title)", destination: url)
+                                                .scaledFont(11)
+                                                .lineLimit(1)
+                                                .help(source.element.url)
+                                        }
+                                    }
+                                }
+                            }
+                            if allowWeb && !item.fromWeb {
+                                Button {
+                                    AppState.shared.extendWithWeb(item)
+                                } label: {
+                                    Label("Ampliar con internet", systemImage: "globe")
+                                        .scaledFont(11, weight: .semibold)
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(Theme.qa)
+                                .help("Busca solo esta pregunta en DuckDuckGo / Wikipedia; la reunión no sale de tu Mac")
+                            }
+                        }
                     }
                 } else {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
-                        Text("Pensando…").foregroundStyle(.secondary)
+                        Text(item.fromWeb ? "Buscando en internet…" : "Pensando…").foregroundStyle(.secondary)
                     }
                 }
             }
@@ -1765,38 +1874,106 @@ struct FullView: View {
                 } else if let updated = state.summaryUpdatedAt {
                     Text("Actualizado \(updated)").scaledFont(11).foregroundStyle(.secondary)
                 }
-                IconButton(systemImage: "doc.on.doc", help: "Copiar resumen") {
-                    state.copySummary()
+                IconButton(systemImage: "doc.on.doc", help: "Copiar lo que muestra esta pestaña") {
+                    state.copySummaryTab()
                 }
-                .disabled(state.liveSummary.isEmpty)
+                .disabled(state.summaryTabIsEmpty)
                 IconButton(systemImage: "arrow.clockwise", help: "Actualizar ahora (⌘R)") {
                     state.refreshSummary(force: true)
                 }
                 .disabled(state.isSummarizing)
             }
         } content: {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    // Errors show above the last good summary instead of hiding it.
-                    if let error = state.summaryError {
-                        Label(error, systemImage: "exclamationmark.triangle")
-                            .scaledFont(12)
-                            .foregroundStyle(Color.orange)
+            VStack(spacing: 0) {
+                Picker("Mostrar", selection: $state.summaryTab) {
+                    Text("Resumen").tag("summary")
+                    Text(state.keyQuestions.isEmpty ? "Preguntas" : "Preguntas (\(state.keyQuestions.count))").tag("questions")
+                    Text(state.actionItems.isEmpty ? "Tareas" : "Tareas (\(state.actionItems.count))").tag("tasks")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .padding(.horizontal, 14)
+                .padding(.top, 10)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        // Errors show above the last good content instead of hiding it.
+                        if let error = state.summaryError {
+                            Label(error, systemImage: "exclamationmark.triangle")
+                                .scaledFont(12)
+                                .foregroundStyle(Color.orange)
+                        }
+                        switch state.summaryTab {
+                        case "questions":
+                            summaryQuestionsTab
+                        case "tasks":
+                            summaryTasksTab
+                        default:
+                            summaryTextTab
+                        }
                     }
-                    if !state.liveSummary.isEmpty {
-                        MarkdownText(markdown: state.liveSummary, fontSize: state.transcriptFontSize)
-                    } else if state.summaryError == nil {
-                        Text(
-                            state.autoSummary
-                                ? "El resumen se escribe solo mientras escuchas (cada \(state.liveInterval) s) y saca las preguntas clave al panel de abajo. También puedes pulsar ↻."
-                                : "Pulsa ↻ para generar el resumen de lo transcrito."
-                        )
-                        .foregroundStyle(.secondary)
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var summaryTextTab: some View {
+        if !state.liveSummary.isEmpty {
+            MarkdownText(markdown: state.liveSummary, fontSize: state.transcriptFontSize)
+        } else if state.summaryError == nil {
+            Text(
+                state.autoSummary
+                    ? "El resumen se escribe solo mientras escuchas (cada \(state.liveInterval) s); las preguntas y tareas van en sus pestañas. También puedes pulsar ↻."
+                    : "Pulsa ↻ para generar el resumen de lo transcrito."
+            )
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var summaryQuestionsTab: some View {
+        if state.keyQuestions.isEmpty {
+            Text("Todavía no hay preguntas clave. Salen solas con el resumen en vivo.")
+                .foregroundStyle(.secondary)
+        } else {
+            ForEach(Array(state.keyQuestions.enumerated()), id: \.offset) { item in
+                keyQuestionRow(item.element)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var summaryTasksTab: some View {
+        if state.actionItems.isEmpty {
+            Text("Todavía no hay tareas. Salen solas con el resumen en vivo; al detener la reunión puedes mandarlas a Recordatorios.")
+                .foregroundStyle(.secondary)
+        } else {
+            ForEach(Array(state.actionItems.enumerated()), id: \.offset) { item in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: "circle")
+                        .scaledFont(11)
+                        .foregroundStyle(Theme.brand)
+                    Text(MarkdownText.inline(item.element))
+                        .font(.system(size: CGFloat(max(12, state.transcriptFontSize - 1))))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    IconButton(systemImage: "doc.on.doc", help: "Copiar tarea") {
+                        state.copyText(String(MarkdownText.inline(item.element).characters), message: "Tarea copiada")
                     }
                 }
-                .padding(14)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            Button {
+                state.extractTasks()
+            } label: {
+                Label("Agregar a Recordatorios…", systemImage: "checklist")
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Theme.brand)
+            .disabled(state.isExtractingTasks)
+            .padding(.top, 4)
+            .help("La IA ordena responsable y fecha y te deja elegir cuáles agregar")
         }
     }
 
@@ -1851,7 +2028,7 @@ struct FullView: View {
                                 .foregroundStyle(.secondary)
                             }
                             ForEach(state.qaItems) { item in
-                                QARow(item: item, fontSize: state.transcriptFontSize)
+                                QARow(item: item, fontSize: state.transcriptFontSize, allowWeb: state.allowWebSearch)
                                     .id(item.id)
                             }
                         }
@@ -1887,6 +2064,47 @@ struct FullView: View {
         }
     }
 
+    /// One detected question: tap to have Qwen answer it, copy, or right-click.
+    @ViewBuilder
+    private func keyQuestionRow(_ question: String) -> some View {
+        let answering = state.isAnswering(question)
+        let plain = String(MarkdownText.inline(question).characters)
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Button {
+                state.ask(question)
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: "questionmark.circle.fill")
+                        .foregroundStyle(Theme.qa)
+                    Text(MarkdownText.inline(question))
+                        .font(.system(size: CGFloat(max(12, state.transcriptFontSize - 2))))
+                        .lineLimit(3)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if answering {
+                        ProgressView().controlSize(.small)
+                        Text("Respondiendo…").scaledFont(11).foregroundStyle(Theme.qa)
+                    } else {
+                        Image(systemName: "arrow.right.circle")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(answering)
+            .help("Pedir a la IA que la responda con lo dicho en la reunión (la respuesta sale en Preguntas)")
+            IconButton(systemImage: "doc.on.doc", help: "Copiar pregunta") {
+                state.copyText(plain, message: "Pregunta copiada")
+            }
+        }
+        .contextMenu {
+            Button("Copiar pregunta") { state.copyText(plain, message: "Pregunta copiada") }
+            Button("Preguntar a la IA") { state.ask(question) }
+                .disabled(answering)
+        }
+    }
+
     /// Key questions extracted from the audio by the live summary; tapping one
     /// asks Qwen to answer it from the transcript.
     private var keyQuestionsList: some View {
@@ -1908,42 +2126,7 @@ struct FullView: View {
                 .help("Ocultar (vuelven con el botón ? de la cabecera)")
             }
             ForEach(Array(state.keyQuestions.prefix(5).enumerated()), id: \.offset) { item in
-                let answering = state.isAnswering(item.element)
-                let plain = String(MarkdownText.inline(item.element).characters)
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Button {
-                        state.ask(item.element)
-                    } label: {
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Image(systemName: "questionmark.circle.fill")
-                                .foregroundStyle(Theme.qa)
-                            Text(MarkdownText.inline(item.element))
-                                .font(.system(size: CGFloat(max(12, state.transcriptFontSize - 2))))
-                                .lineLimit(2)
-                                .multilineTextAlignment(.leading)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            if answering {
-                                ProgressView().controlSize(.small)
-                                Text("Respondiendo…").scaledFont(11).foregroundStyle(Theme.qa)
-                            } else {
-                                Image(systemName: "arrow.right.circle")
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(answering)
-                    .help("Pedir a la IA que la responda con lo dicho en la reunión (la respuesta sale abajo)")
-                    IconButton(systemImage: "doc.on.doc", help: "Copiar pregunta") {
-                        state.copyText(plain, message: "Pregunta copiada")
-                    }
-                }
-                .contextMenu {
-                    Button("Copiar pregunta") { state.copyText(plain, message: "Pregunta copiada") }
-                    Button("Preguntar a la IA") { state.ask(item.element) }
-                        .disabled(answering)
-                }
+                keyQuestionRow(item.element)
             }
         }
         .padding(12)
@@ -2014,6 +2197,7 @@ struct SettingsPopover: View {
                 Toggle("Respuestas largas y detalladas", isOn: $state.longAnswers)
                 Toggle("Mostrar preguntas detectadas en el audio", isOn: $state.showKeyQuestions)
                 Toggle("Al detener, proponer las tareas para Recordatorios", isOn: $state.askTasksOnStop)
+                Toggle("Botón «Ampliar con internet» (solo envía la pregunta)", isOn: $state.allowWebSearch)
                 Toggle("Resumen y preguntas clave en vivo", isOn: $state.autoSummary)
                 Picker("Actualizar cada", selection: $state.liveInterval) {
                     Text("15 s").tag(15)

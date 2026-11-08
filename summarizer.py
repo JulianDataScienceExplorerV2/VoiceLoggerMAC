@@ -40,6 +40,7 @@ MAX_NOTES_CHARS = 9000
 # resumen, más lento y con picos de memoria/GPU (sobre todo con modelos 4B).
 QA_MAX_CHARS = 12000
 MAX_KEY_QUESTIONS = 6
+MAX_TASKS = 10
 
 # Presupuestos de tokens por bloque del prompt: el tamaño del prompt (y la
 # memoria que usa al generar) no crece con la duración de la reunión.
@@ -118,6 +119,13 @@ PROMPTS = {
             "recent": "Most recent part of the transcript:",
             "transcript": "Meeting transcript:",
             "question": "Question:",
+            "web": "Web search results:",
+            "previous": "Answer based on the meeting:",
+            "extend": (
+                "Extend the answer with useful information from the web results. Keep what the "
+                "meeting said, clearly separate it from what comes from the web, and cite web facts "
+                "with their number, like [1] or [2]. If the web results are not relevant, say so."
+            ),
             "instruction_short": (
                 "Answer concisely (2-4 sentences) using only this information. If the answer "
                 "is not there, say so clearly instead of making it up."
@@ -178,6 +186,13 @@ PROMPTS = {
             "recent": "Parte más reciente de la transcripción:",
             "transcript": "Transcripción de la reunión:",
             "question": "Pregunta:",
+            "web": "Resultados de la búsqueda en internet:",
+            "previous": "Respuesta basada en la reunión:",
+            "extend": (
+                "Amplía la respuesta con información útil de los resultados de internet. Conserva lo "
+                "que dijo la reunión, sepáralo claramente de lo que viene de internet y cita los datos "
+                "de internet con su número, como [1] o [2]. Si los resultados no son relevantes, dilo."
+            ),
             "instruction_short": (
                 "Responde de forma concisa (2-4 frases) usando solo esta información. Si la "
                 "respuesta no aparece, dilo claramente en vez de inventarla."
@@ -468,18 +483,28 @@ def _is_empty_item(item):
     return (lowered.startswith("no ") and "question" in lowered) or lowered.startswith("no hay pregunta")
 
 
-def split_key_questions(markdown, limit=MAX_KEY_QUESTIONS):
-    """Separa la sección de preguntas clave del acta: (resto_markdown, [preguntas])."""
-    kept, questions = [], []
-    in_questions = False
+def _is_questions_title(title):
+    return "question" in title or "pregunta" in title
+
+
+def _is_actions_title(title):
+    return any(word in title for word in ("action", "task", "to-do", "todo", "tarea", "pendiente"))
+
+
+def _extract_section(markdown, matches_title, limit):
+    """Saca de ``markdown`` las secciones cuyo título cumple ``matches_title``.
+
+    Devuelve (resto_markdown, [viñetas de esas secciones]).
+    """
+    kept, items = [], []
+    inside = False
     for line in (markdown or "").splitlines():
         stripped = line.strip()
         if stripped.startswith("#"):
-            title = stripped.lstrip("#").strip().lower()
-            in_questions = "question" in title or "pregunta" in title
-            if in_questions:
+            inside = matches_title(stripped.lstrip("#").strip().lower())
+            if inside:
                 continue
-        elif in_questions:
+        elif inside:
             item = stripped
             for bullet in ("- ", "* ", "• "):
                 if item.startswith(bullet):
@@ -487,11 +512,21 @@ def split_key_questions(markdown, limit=MAX_KEY_QUESTIONS):
                     break
             else:
                 item = _NUMBERED_RE.sub("", item).strip()
-            if item and not _is_empty_item(item) and len(questions) < limit:
-                questions.append(item)
+            if item and not _is_empty_item(item) and len(items) < limit:
+                items.append(item)
             continue
         kept.append(line)
-    return "\n".join(kept).strip(), questions
+    return "\n".join(kept).strip(), items
+
+
+def split_key_questions(markdown, limit=MAX_KEY_QUESTIONS):
+    """Separa la sección de preguntas clave del acta: (resto_markdown, [preguntas])."""
+    return _extract_section(markdown, _is_questions_title, limit)
+
+
+def split_action_items(markdown, limit=MAX_TASKS):
+    """Separa la sección de tareas / action items del acta: (resto_markdown, [tareas])."""
+    return _extract_section(markdown, _is_actions_title, limit)
 
 
 def _live_blocking(text, new_text, previous, language):
@@ -521,7 +556,8 @@ def live_insights(text="", new_text="", previous="", language="en"):
 
     - ``text``: transcripción completa (la app la manda solo si es corta) → acta desde cero.
     - ``previous`` + ``new_text``: actualización incremental de las notas anteriores.
-    Devuelve {"markdown": acta completa, "summary": acta sin preguntas, "questions": [...]}.
+    Devuelve {"markdown": acta completa, "summary": acta sin preguntas ni tareas,
+    "questions": [...], "action_items": [...]} (las pestañas Resumen / Preguntas / Tareas).
     """
     text, new_text, previous = text or "", new_text or "", previous or ""
     if not (text.strip() or new_text.strip()):
@@ -530,8 +566,9 @@ def live_insights(text="", new_text="", previous="", language="en"):
         markdown = previous.strip()
     else:
         markdown = (_executor.submit(_run_live, text, new_text, previous, language).result() or "").strip()
-    summary, questions = split_key_questions(markdown)
-    return {"markdown": markdown, "summary": summary, "questions": questions}
+    rest, questions = split_key_questions(markdown)
+    summary, action_items = split_action_items(rest)
+    return {"markdown": markdown, "summary": summary, "questions": questions, "action_items": action_items}
 
 
 # ---------- Preguntas ----------
@@ -593,9 +630,62 @@ def recall(memory_dir, session, question, recent_text):
     return "\n\n".join(f"[{h['start']} – {h['end']}]\n{h['text']}" for h in hits)
 
 
+# ---------- Ampliar una respuesta con internet ----------
+
+EXTEND_WEB_TOKENS = 1500
+EXTEND_NOTES_TOKENS = 600
+EXTEND_PREVIOUS_TOKENS = 700
+
+
+def _extend_blocking(question, previous, notes, results, language, detail):
+    labels = _prompts(language)["ask"]
+    web = "\n\n".join(
+        f"[{n}] {r['title']} — {r['url']}\n{r['snippet']}" for n, r in enumerate(results, start=1)
+    )
+    blocks = [f"{labels['question']} {question}"]
+    previous = fit_tokens(previous, EXTEND_PREVIOUS_TOKENS, keep="head")
+    notes = fit_tokens(notes, EXTEND_NOTES_TOKENS, keep="head")
+    if previous:
+        blocks.append(f"{labels['previous']}\n{previous}")
+    if notes:
+        blocks.append(f"{labels['notes']}\n{notes}")
+    blocks.append(f"{labels['web']}\n{fit_tokens(web, EXTEND_WEB_TOKENS, keep='head')}")
+    detail = detail if detail in ANSWER_MAX_TOKENS else "long"
+    blocks.append(labels["extend"])
+    return _generate(
+        _system_prompt(language), "\n\n".join(blocks), max_tokens=ANSWER_MAX_TOKENS[detail] + 100, temp=0.2
+    )
+
+
+def _run_extend(question, previous, notes, results, language, detail):
+    _ensure_model()
+    return _extend_blocking(question, previous, notes, results, language, detail)
+
+
+def extend_with_web(question, previous="", notes="", language="en", detail="long", search=None):
+    """Amplía una respuesta con resultados de internet.
+
+    Solo se envía a internet el texto de ``question``; la reunión no sale del
+    Mac. Devuelve {"answer", "sources": [{"title", "url"}]}.
+    """
+    question = (question or "").strip()
+    if not question:
+        raise ValueError("empty question")
+    if search is None:
+        from web_search import search
+    results = search(question, language=language)
+    if not results:
+        empty = "No encontré resultados en internet para esa pregunta." if language == "es" else \
+            "I couldn't find web results for that question."
+        return {"answer": empty, "sources": []}
+    answer = _executor.submit(
+        _run_extend, question, previous or "", notes or "", results, language, detail or "long"
+    ).result()
+    return {"answer": answer, "sources": [{"title": r["title"], "url": r["url"]} for r in results]}
+
+
 # ---------- Tareas para Recordatorios ----------
 
-MAX_TASKS = 10
 TASKS_NOTES_TOKENS = 1000
 TASKS_RECENT_TOKENS = 2500
 _LIST_PREFIX_RE = re.compile(r"^(?:[-*•]|\d+[.)])\s*(?:\[[ xX]\]\s*)?")
@@ -691,6 +781,11 @@ def handle_request(request):
         memory = MeetingMemory(request.get("memory_dir"), request.get("session"))
         stored = memory.add(int(request.get("index")), request.get("start"), request.get("end"), request.get("text"))
         return {"stored": stored, "segments": len(memory.segments())}
+    if kind == "extend":
+        return extend_with_web(
+            request.get("question"), request.get("previous"), request.get("notes"), language,
+            request.get("detail") or "long",
+        )
     if kind == "tasks":
         return {"tasks": extract_tasks(request.get("notes"), request.get("text"), language, request.get("today"))}
     if kind == "unload":

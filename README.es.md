@@ -20,7 +20,9 @@ En `native/` está la versión nativa para macOS, pensada para leer durante la r
 - **Reuniones largas sin llenar la RAM**: memoria de la reunión en disco + presupuesto fijo de tokens por prompt; Qwen se descarga solo tras un rato sin uso.
 - **`qwen_context.txt`**: persona/contexto para la IA («You are an expert in …»).
 - **Velocidad del texto en vivo** (Rápida / Normal / Precisa), tamaño de interfaz, letra de lectura, subtítulos flotantes, modo compacto, siempre encima, alertas, selector de modelos Whisper y Qwen, atajos de teclado.
-- 100 % local: audio, transcripción e IA nunca salen de tu Mac.
+- **Pestañas en el Resumen IA**: Resumen (por defecto) · Preguntas · Tareas.
+- 🌐 **Ampliar con internet** (opcional, por respuesta): busca solo el texto de la pregunta en DuckDuckGo/Wikipedia y cita las fuentes.
+- Local: audio, transcripción e IA se quedan en tu Mac (solo el botón 🌐 envía el texto de la pregunta a un buscador).
 
 Requisitos: macOS 15+, Apple Silicon, Xcode 16 (Swift 6). La parte de IA usa el entorno Python de este repo:
 
@@ -159,6 +161,7 @@ Los logs se guardan localmente en `logs/transcripcion_AAAA-MM-DD.txt` y `.jsonl`
 ├── transcriber.py        # Transcripción con MLX Whisper
 ├── summarizer.py         # Resumen IA local con Qwen (mlx-lm)
 ├── meeting_memory.py     # Memoria en disco de la reunión para la IA (búsqueda BM25)
+├── web_search.py         # Búsqueda web opcional para «Ampliar con internet» (DuckDuckGo/Wikipedia)
 ├── logger.py             # Guardado TXT/JSONL en logs/
 ├── history_dialog.py     # Historial y exportación MD/PDF
 ├── benchmark.py          # Benchmark de modelos Whisper

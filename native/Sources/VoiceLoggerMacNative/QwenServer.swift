@@ -4,10 +4,31 @@ import Foundation
 struct LiveInsights: Decodable, Sendable {
     /// Full notes, sent back as `previous` on the next incremental update.
     let markdown: String
-    /// Notes without the key-questions section (shown in the summary panel).
+    /// Notes without the key-questions and action-items sections ("Resumen" tab).
     let summary: String
-    /// Most important questions heard so far (shown in the questions panel).
+    /// Most important questions heard so far ("Preguntas" tab and Questions panel).
     let questions: [String]
+    /// Action items so far ("Tareas" tab).
+    let actionItems: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case markdown, summary, questions
+        case actionItems = "action_items"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        markdown = try container.decode(String.self, forKey: .markdown)
+        summary = try container.decode(String.self, forKey: .summary)
+        questions = try container.decodeIfPresent([String].self, forKey: .questions) ?? []
+        actionItems = try container.decodeIfPresent([String].self, forKey: .actionItems) ?? []
+    }
+}
+
+/// A web page used by "Ampliar con internet".
+struct WebSource: Decodable, Sendable, Equatable {
+    let title: String
+    let url: String
 }
 
 /// Splits a byte stream into newline-terminated lines. Thread-safe: it is fed
@@ -50,6 +71,11 @@ actor QwenServer {
 
     private struct Answer: Decodable {
         let answer: String
+    }
+
+    private struct Extended: Decodable {
+        let answer: String
+        let sources: [WebSource]
     }
 
     private struct TasksPayload: Decodable {
@@ -102,6 +128,17 @@ actor QwenServer {
         ])
         return try JSONDecoder().decode(Envelope<Answer>.self, from: data).result.answer
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Extends an answer with web results. Only `question` is searched on the
+    /// internet; the meeting stays on the Mac (notes go to the local model only).
+    func extend(question: String, previous: String, notes: String, lang: String, detail: String) async throws -> (answer: String, sources: [WebSource]) {
+        let data = try await send([
+            "type": "extend", "question": question, "previous": previous, "notes": notes,
+            "lang": lang, "detail": detail,
+        ])
+        let result = try JSONDecoder().decode(Envelope<Extended>.self, from: data).result
+        return (result.answer.trimmingCharacters(in: .whitespacesAndNewlines), result.sources)
     }
 
     /// Action items of the meeting (`today` = YYYY-MM-DD, to resolve "next Friday").

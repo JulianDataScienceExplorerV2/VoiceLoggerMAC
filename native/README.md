@@ -143,6 +143,19 @@ native/package.sh --dmg       # además native/dist/VoiceLoggerMac.dmg para comp
   Con un certificado: `SIGN_IDENTITY="Developer ID Application: …" native/package.sh`.
 - La primera vez copia tus ajustes de `swift run`.
 
+## Pestañas del Resumen IA
+
+**Resumen** (por defecto) · **Preguntas** · **Tareas**. El resumen en vivo se separa solo: las preguntas clave
+(tócalas para que la IA las responda) y las tareas (botón *Agregar a Recordatorios…*). El botón copiar copia la
+pestaña que estás viendo.
+
+## Ampliar con internet 🌐
+
+Qwen es local y no navega: responde con lo dicho en la reunión. Cada respuesta tiene **Ampliar con internet**:
+busca **solo el texto de la pregunta** en DuckDuckGo (o Wikipedia si falla) y Qwen amplía la respuesta citando
+[1], [2]… con las fuentes como enlaces. La reunión no sale de tu Mac. Se puede quitar en ⚙. Los resultados de un
+modelo pequeño pueden fallar: revisa las fuentes.
+
 ## Tareas → Recordatorios y exportar
 
 - Al pulsar **Detener**, Qwen saca las tareas de la reunión (con responsable y fecha límite si se dijeron) y pregunta
