@@ -70,8 +70,11 @@ botones y ajustes; *Letra de lectura* (A- / A+) agranda transcripción, resumen 
   Qwen **una sola vez** y lo deja en memoria (~1 GB con el modelo 1.5B 4-bit). Habla con la
   app por JSON, una línea por mensaje; se cierra solo al salir de la app. Su log queda en
   `~/Library/Application Support/VoiceLoggerMac/qwen_server.log`.
-- **En vivo**: cada *N* segundos (15 s / 30 s / 1 min / 2 min, en ⚙) si hay texto nuevo.
-  Nunca se solapan dos actualizaciones y el intervalo cuenta desde que termina la anterior.
+- **Dos ritmos (⚙):** las **preguntas** cada 5 s (10 / 15 / 30 s o «con el resumen») con una petición liviana
+  —solo lo último que se dijo (~1-2 min) y las preguntas ya listadas, para no repetirlas—, y el **resumen** cada
+  1 min (30 s / 2 min / 5 min o **«Solo al final»**, que lo escribe una vez al detener). Al detener siempre se hace
+  una última actualización con el final de la reunión. Solo corren si hay texto nuevo, nunca se solapan, el
+  intervalo cuenta desde que termina la anterior, y Whisper y tus preguntas van primero.
 - **Incremental**: mientras la reunión cabe en una pasada (~12 000 caracteres) el acta se
   rehace entera; después se actualiza con *notas anteriores + solo lo nuevo*, así cada
   actualización cuesta lo mismo a los 5 minutos que a las 2 horas.
@@ -231,12 +234,18 @@ modelo pequeño pueden fallar: revisa las fuentes.
   piden login y no aportan. Si así no sale nada, se repite sin filtros.
 - **Sitios preferidos** (⚙, hasta 3, p. ej. `hbr.org, mckinsey.com, who.int`): se busca en cada uno con
   `site:` (DuckDuckGo no admite `OR` entre `site:`) y van primero en las fuentes.
+- **Sitio de referencia según el tema** (automático, si queda cupo): frontend (React, CSS, TypeScript…) →
+  `site:developer.mozilla.org`; backend (Python, SQL, Docker, APIs…) → `site:stackoverflow.com`; marketing
+  (ROAS, atribución, SEO, embudo, GA4…) → `site:thinkwithgoogle.com`.
 - **Fuentes confiables primero:** de los 8 primeros resultados suben Wikipedia, gobierno (.gov, gob.xx), universidades
-  (.edu, ac.uk), organismos (WHO, ONU, OCDE…), ciencia (Nature, arXiv…), prensa seria y documentación oficial. A Qwen
+  (.edu, ac.uk), organismos (WHO, ONU, OCDE…), ciencia (Nature, arXiv…), prensa seria, documentación oficial de
+  desarrollo (MDN, react.dev, Python, Docker, PostgreSQL, OWASP, Stack Overflow…) y fuentes de marketing (Think with
+  Google, AMA, Ehrenberg-Bass, Nielsen, Gartner, Forrester…). A Qwen
   le llegan marcadas «fuente confiable» y, si las fuentes no coinciden, se le pide confiar en esas.
-- **Lee las páginas** (⚙, activado): abre las 2 mejores páginas (solo https públicas, máx. 7 s) y le pasa a Qwen sus
-  párrafos más relacionados con la pregunta (hasta 2000 caracteres por página), sin menús, cabeceras, pies ni scripts;
-  no solo el resumen corto del buscador.
+- **Lee las páginas** (⚙, activado): abre las 3 mejores páginas (solo https públicas, máx. 7 s) y le pasa a Qwen sus
+  párrafos más relacionados con la pregunta (hasta 2500 caracteres por página), sin menús, cabeceras, pies ni scripts;
+  no solo el resumen corto del buscador. Qwen recibe hasta 6 resultados y el complemento de Ideas (respuesta larga)
+  arma ideas más elaboradas, ejemplos o pasos (~150-250 palabras).
 - En cada fuente se ve su **dominio**, ✓ si es confiable y 🔍 si la IA leyó la página.
 
 ## Tareas → Recordatorios y exportar

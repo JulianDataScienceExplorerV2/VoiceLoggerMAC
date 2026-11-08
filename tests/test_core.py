@@ -798,7 +798,8 @@ class TwoStepIdeasTests(unittest.TestCase):
                 "notes": "", "sites": "hbr.org", "read": "1",
             })
         self.assertEqual(calls, [("How do we grow?", {"language": "en", "sites": "hbr.org",
-                                                      "read": summarizer.WEB_READ_PAGES})])
+                                                      "read": summarizer.WEB_READ_PAGES,
+                                                      "limit": summarizer.WEB_RESULTS})])
         self.assertEqual(extra, {"answer": "Referrals help [1].", "sources": [
             {"title": "Growth", "url": "https://en.wikipedia.org/wiki/G", "trusted": True, "read": True}]})
         prompt = fake.call_args[0][1]
@@ -825,6 +826,65 @@ class TwoStepIdeasTests(unittest.TestCase):
         for n in range(12):
             summarizer.prefetch_web(f"q{n}", search=lambda q, **kwargs: [])
         self.assertLessEqual(len(summarizer._web_prefetch), 8)
+
+
+class LiveQuestionsTests(unittest.TestCase):
+    """Preguntas en vivo cada pocos segundos (petición liviana, aparte del resumen)."""
+
+    def test_parse_questions(self):
+        raw = ("- Why does your organization exist?\n- none\n1. **What is the budget for Q3**\n"
+               "- ok?\n- Why does your organization exist?\n- The user wants questions\n## Notes\n"
+               "- How do we measure ROAS?\n- Who owns the launch?\n- When is the deadline?")
+        self.assertEqual(summarizer.parse_questions(raw), [
+            "Why does your organization exist?", "What is the budget for Q3?",
+            "How do we measure ROAS?", "Who owns the launch?"])  # máximo 4
+        self.assertEqual(summarizer.parse_questions("- ninguna"), [])
+
+    def test_prompt_has_recent_text_and_known_questions(self):
+        with mock.patch.object(summarizer, "_generate", return_value="- Who pays?  \n- How much does it cost?") as fake, \
+                mock.patch.object(summarizer, "load_context", return_value=""), \
+                mock.patch.object(summarizer, "_ensure_model"):
+            reply = summarizer.handle_request({"type": "questions", "text": "[10:00] How much does it cost?",
+                                               "known": "Who pays for it?\nWhen do we start?", "lang": "en"})
+        self.assertEqual(reply, {"questions": ["How much does it cost?"]})  # «Who pays?» es muy corta
+        prompt = fake.call_args[0][1]
+        self.assertIn("Questions already listed:\n- Who pays for it?\n- When do we start?", prompt)
+        self.assertIn("Latest part of the meeting:\n[10:00] How much does it cost?", prompt)
+        self.assertIn("copy it word for word", prompt)
+        self.assertEqual(fake.call_args[1]["max_tokens"], summarizer.QUESTIONS_MAX_TOKENS)
+
+    def test_no_text_no_model(self):
+        with mock.patch.object(summarizer, "_generate") as fake:
+            self.assertEqual(summarizer.live_questions("  "), [])
+        fake.assert_not_called()
+
+
+class TopicSitesTests(unittest.TestCase):
+    def test_topics(self):
+        self.assertEqual(web_search.topic_sites("How do I memoize a React component with hooks?"), ["developer.mozilla.org"])
+        self.assertEqual(web_search.topic_sites("Cómo mido el ROAS de una campaña con GA4"), ["thinkwithgoogle.com"])
+        self.assertEqual(web_search.topic_sites("Paginate an API in FastAPI and track conversions"),
+                         ["stackoverflow.com", "thinkwithgoogle.com"])
+        self.assertEqual(web_search.topic_sites("What are the next steps? Let's rest and lead"), [])
+
+    def test_search_adds_topic_site_after_preferred(self):
+        queries = []
+
+        def fetch(url):
+            queries.append(urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["q"][0])
+            return DDG_SAMPLE
+
+        web_search.search("React hooks", fetch=fetch, sites="hbr.org")
+        self.assertIn("React hooks site:hbr.org", queries)
+        self.assertIn("React hooks site:developer.mozilla.org", queries)
+        queries.clear()
+        web_search.search("React hooks", fetch=fetch, topics=False)
+        self.assertEqual(len(queries), 1)
+
+    def test_developer_and_marketing_sources_are_trusted(self):
+        for url in ("https://react.dev/learn", "https://stackoverflow.com/q/1", "https://www.thinkwithgoogle.com/x",
+                    "https://docs.docker.com/a", "https://www.postgresql.org/docs/"):
+            self.assertTrue(web_search.is_trusted(url), url)
 
 
 class FitTokensTests(unittest.TestCase):

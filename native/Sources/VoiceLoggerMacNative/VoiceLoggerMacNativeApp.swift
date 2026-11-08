@@ -212,8 +212,13 @@ final class AppState: ObservableObject {
     @Published var answerMode = "open" { didSet { save() } }
     /// Detailed answers (default) or short ones, for the Questions panel.
     @Published var longAnswers = true { didSet { save() } }
-    /// Seconds between live summary updates (counted from the end of the previous one).
-    @Published var liveInterval = 30 { didSet { save() } }
+    /// Seconds between live summary updates (counted from the end of the
+    /// previous one); 0 = only once, when the meeting stops.
+    @Published var liveInterval = 60 { didSet { save() } }
+    /// Seconds between live question updates (light request: only the latest
+    /// part of the meeting); 0 = questions come with the summary.
+    @Published var questionsInterval = 5 { didSet { save() } }
+    @Published var isFindingQuestions = false
     @Published var qwenModel = QwenModels.default {
         didSet {
             guard oldValue != qwenModel else { return }
@@ -243,6 +248,12 @@ final class AppState: ObservableObject {
     /// Qwen updates only start when this is 0.
     private var pendingTranscriptions = 0
     private var lastSummaryAt: Date?
+    private var lastQuestionsAt: Date?
+    /// Characters transcribed so far, and how many the question loop has seen.
+    private var transcriptChars = 0
+    private var questionsMark = 0
+    /// Latest part of the transcript sent to the question loop (~1-2 min of talk).
+    static let questionsChars = 1800
     /// Full notes from the last live update (fed back for incremental updates).
     private var liveMarkdown = ""
     /// Transcript already covered by `liveMarkdown`.
@@ -430,6 +441,10 @@ final class AppState: ObservableObject {
         status = "Detenido"
         metrics.level = 0
         stopTimer()
+        // Final summary with the last part of the meeting (the only one with "Solo al final").
+        if autoSummary, hasUnsummarizedText, !entries.isEmpty {
+            refreshSummary()
+        }
         if askTasksOnStop, !entries.isEmpty {
             extractTasks()
         }
@@ -621,6 +636,7 @@ final class AppState: ObservableObject {
         let gap = lastEntryAt.map { now.timeIntervalSince($0) } ?? .infinity
         lastEntryAt = now
         let matched = matchedAlerts(in: text)
+        transcriptChars += text.count + 1
 
         if let last = entries.last, gap <= 6.5, last.lang == lang, last.text.count < 450 {
             entries[entries.count - 1] = TranscriptEntry(
@@ -640,6 +656,7 @@ final class AppState: ObservableObject {
         hasUnsummarizedText = true
         closeSegments()
         rememberPendingSegments()
+        maybeFindQuestions()
         maybeAutoSummarize()
     }
 
@@ -662,6 +679,7 @@ final class AppState: ObservableObject {
         // Also checked every second so the last phrases get summarized even
         // when nobody speaks for a while, and failed memory writes are retried.
         rememberPendingSegments()
+        maybeFindQuestions()
         maybeAutoSummarize()
     }
 
@@ -743,8 +761,55 @@ final class AppState: ObservableObject {
         // request at a time and the user is looking at the screen.
         guard !qaItems.contains(where: { $0.answer == nil }) else { return }
         if liveMarkdown.isEmpty, entries.reduce(0, { $0 + $1.text.count }) < 150 { return }
+        guard liveInterval > 0 else { return }  // "Solo al final": once, on stop
         if let last = lastSummaryAt, Date().timeIntervalSince(last) < Double(liveInterval) { return }
         refreshSummary()
+    }
+
+    /// Live questions: every `questionsInterval` seconds (from the end of the
+    /// previous run) if something new was said. Light request, so it can run
+    /// often; Whisper and the user's questions still go first.
+    private func maybeFindQuestions() {
+        guard autoSummary, questionsInterval > 0, !isFindingQuestions, transcriptChars > questionsMark else { return }
+        guard pendingTranscriptions == 0 else { return }
+        guard !qaItems.contains(where: { $0.answer == nil || $0.complementLoading }) else { return }
+        if let last = lastQuestionsAt, Date().timeIntervalSince(last) < Double(questionsInterval) { return }
+        findQuestions()
+    }
+
+    private func findQuestions() {
+        guard let server = resolveServer() else { return }
+        let recent = String(
+            entries.suffix(30).map { "[\($0.timestamp)] \($0.text)" }.joined(separator: "\n").suffix(Self.questionsChars)
+        )
+        guard !recent.isEmpty else { return }
+        let known = questionHistory.suffix(12).map(\.text)
+        let lang = summaryLang
+        let generation = aiGeneration
+        let mark = transcriptChars
+        isFindingQuestions = true
+        Task {
+            let found = try? await server.questions(text: recent, known: known, lang: lang)
+            self.isFindingQuestions = false
+            self.lastQuestionsAt = Date()
+            guard generation == self.aiGeneration, let found else { return }  // errors: retried next time
+            self.questionsMark = mark
+            self.addLiveQuestions(found)
+        }
+    }
+
+    /// New questions go first in "Ahora" and into the history once (the same
+    /// question with other words counts as the same one).
+    private func addLiveQuestions(_ found: [String]) {
+        let fresh = found.filter { question in
+            !questionHistory.contains { LiteralQuestions.isSimilar($0.text, question) }
+                && !lastInsightQuestions.contains { LiteralQuestions.isSimilar($0, question) }
+        }
+        guard !fresh.isEmpty else { return }
+        classifyQuestions(fresh)
+        lastInsightQuestions = Array((fresh + lastInsightQuestions).prefix(12))
+        keyQuestions = selectQuestions(lastInsightQuestions)
+        rememberQuestions(keyQuestions)
     }
 
     func refreshSummary(force: Bool = false) {
@@ -795,11 +860,17 @@ final class AppState: ObservableObject {
             case .success(let insights):
                 self.liveMarkdown = insights.markdown
                 self.liveSummary = insights.summary
-                self.classifyQuestions(insights.questions)
-                self.lastInsightQuestions = insights.questions
-                let questions = self.selectQuestions(insights.questions)
-                self.keyQuestions = questions
-                self.rememberQuestions(questions)
+                if self.questionsInterval > 0 {
+                    // The live question loop owns "Ahora"; the summary only adds
+                    // questions it may have missed.
+                    self.addLiveQuestions(insights.questions)
+                } else {
+                    self.classifyQuestions(insights.questions)
+                    self.lastInsightQuestions = insights.questions
+                    let questions = self.selectQuestions(insights.questions)
+                    self.keyQuestions = questions
+                    self.rememberQuestions(questions)
+                }
                 self.actionItems = insights.actionItems
                 self.summarizedText = full
                 self.summaryUpdatedAt = Self.clock()
@@ -1337,6 +1408,9 @@ final class AppState: ObservableObject {
         memorySegments = 0
         hasUnsummarizedText = false
         lastSummaryAt = nil
+        lastQuestionsAt = nil
+        transcriptChars = 0
+        questionsMark = 0
         aiGeneration += 1
         summaryUpdatedAt = nil
         summaryError = nil
@@ -1438,6 +1512,7 @@ final class AppState: ObservableObject {
         d.set(summaryLang, forKey: "ai_lang")
         d.set(autoSummary, forKey: "auto_summary")
         d.set(liveInterval, forKey: "live_interval")
+        d.set(questionsInterval, forKey: "questions_interval")
         d.set(qwenModel, forKey: "qwen_model")
         d.set(longAnswers, forKey: "long_answers")
         d.set(answerMode, forKey: "answer_mode")
@@ -1467,7 +1542,7 @@ final class AppState: ObservableObject {
         let keys = [
             "model", "language", "sensitivity", "alerts", "alert_sound", "autoscroll", "ai_lang", "auto_summary",
             "font_size", "always_on_top", "dim_when_idle", "live_interval", "qwen_model", "ui_scale",
-            "long_answers", "answer_mode", "live_speed", "vocabulary", "show_key_questions", "ai_questions", "ask_tasks_on_stop", "allow_web_search", "preferred_sites", "read_web_pages", "ask_models_on_launch", "models_chosen", "python_root",
+            "long_answers", "answer_mode", "live_speed", "vocabulary", "show_key_questions", "ai_questions", "questions_interval", "ask_tasks_on_stop", "allow_web_search", "preferred_sites", "read_web_pages", "ask_models_on_launch", "models_chosen", "python_root",
         ]
         for key in keys {
             if let value = old.object(forKey: key) { d.set(value, forKey: key) }
@@ -1487,7 +1562,12 @@ final class AppState: ObservableObject {
         autoscroll = d.object(forKey: "autoscroll") as? Bool ?? true
         summaryLang = d.string(forKey: "ai_lang") ?? "en"
         autoSummary = d.object(forKey: "auto_summary") as? Bool ?? true
-        liveInterval = d.object(forKey: "live_interval") as? Int ?? 30
+        // v2: summary every minute by default (questions have their own fast loop).
+        let savedInterval = d.object(forKey: "live_interval") as? Int ?? 60
+        let interval = d.bool(forKey: "intervals_v2") ? savedInterval : 60
+        liveInterval = [0, 30, 60, 120, 300].contains(interval) ? interval : 60
+        questionsInterval = d.object(forKey: "questions_interval") as? Int ?? 5
+        d.set(true, forKey: "intervals_v2")
         // A model that is no longer offered (e.g. the removed Qwen3.5) falls back to the default.
         let savedModel = d.string(forKey: "qwen_model") ?? QwenModels.default
         qwenModel = QwenModels.choices.contains(where: { $0.id == savedModel }) ? savedModel : QwenModels.default
@@ -1701,6 +1781,12 @@ struct LiveBadge: View {
     let interval: Int
     @State private var pulse = false
 
+    /// "cada 30 s", "cada 1 min", "al final".
+    static func label(_ interval: Int) -> String {
+        if interval == 0 { return "al final" }
+        return interval >= 60 ? "cada \(interval / 60) min" : "cada \(interval) s"
+    }
+
     var body: some View {
         HStack(spacing: 4) {
             Circle()
@@ -1708,7 +1794,7 @@ struct LiveBadge: View {
                 .frame(width: 6, height: 6)
                 .opacity(pulse ? 0.25 : 1)
                 .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: pulse)
-            Text("EN VIVO · \(interval) s")
+            Text(interval == 0 ? "RESUMEN AL FINAL" : "EN VIVO · \(Self.label(interval))")
                 .scaledFont(10, weight: .bold)
         }
         .foregroundStyle(Theme.ai)
@@ -1716,7 +1802,7 @@ struct LiveBadge: View {
         .padding(.vertical, 3)
         .background(Theme.ai.opacity(0.14), in: Capsule())
         .onAppear { pulse = true }
-        .help("El resumen y las preguntas clave se actualizan solos mientras escuchas")
+        .help("El resumen se actualiza solo mientras escuchas; las preguntas, cada pocos segundos (⚙)")
     }
 }
 
@@ -2364,7 +2450,9 @@ struct FullView: View {
         } else if state.summaryError == nil {
             Text(
                 state.autoSummary
-                    ? "El resumen se escribe solo mientras escuchas (cada \(state.liveInterval) s); las preguntas y tareas van en sus pestañas. También puedes pulsar ↻."
+                    ? (state.liveInterval == 0
+                        ? "El resumen se escribe al detener la reunión (⚙ Resumen cada → Solo al final). También puedes pulsar ↻ cuando quieras."
+                        : "El resumen se escribe solo mientras escuchas (\(LiveBadge.label(state.liveInterval))); las preguntas y tareas van en sus pestañas. También puedes pulsar ↻.")
                     : "Pulsa ↻ para generar el resumen de lo transcrito."
             )
             .foregroundStyle(.secondary)
@@ -2745,16 +2833,27 @@ struct SettingsPopover: View {
                     .help("Se busca en cada uno con site: y van primero en las fuentes. Vacío = búsqueda normal (sin redes sociales, con Wikipedia, gobierno, universidades y prensa seria primero)")
                     .disabled(!state.allowWebSearch)
                 Toggle("Leer las páginas encontradas (más preciso, unos segundos más)", isOn: $state.readWebPages)
-                    .help("Abre las 2 mejores páginas y le pasa a la IA sus párrafos más relacionados con la pregunta, no solo el resumen del buscador")
+                    .help("Abre las 3 mejores páginas y le pasa a la IA sus párrafos más relacionados con la pregunta, no solo el resumen del buscador")
                     .disabled(!state.allowWebSearch)
                 Toggle("Preguntar los modelos al abrir la app", isOn: $state.askModelsOnLaunch)
                 Toggle("Resumen y preguntas clave en vivo", isOn: $state.autoSummary)
-                Picker("Actualizar cada", selection: $state.liveInterval) {
+                Picker("Preguntas cada", selection: $state.questionsInterval) {
+                    Text("5 s").tag(5)
+                    Text("10 s").tag(10)
                     Text("15 s").tag(15)
+                    Text("30 s").tag(30)
+                    Text("Con el resumen").tag(0)
+                }
+                .help("Petición liviana (solo lo último que se dijo): unos segundos de IA cada vez. Cuenta desde que termina la anterior y solo corre si se dijo algo nuevo.")
+                .disabled(!state.autoSummary)
+                Picker("Resumen cada", selection: $state.liveInterval) {
                     Text("30 s").tag(30)
                     Text("1 min").tag(60)
                     Text("2 min").tag(120)
+                    Text("5 min").tag(300)
+                    Text("Solo al final").tag(0)
                 }
+                .help("El resumen es la parte pesada. «Solo al final»: se escribe una vez, al detener la reunión.")
                 .disabled(!state.autoSummary)
                 Button("Editar contexto de la IA (qwen_context.txt)…") { state.openAIContext() }
             }

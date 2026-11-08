@@ -5,8 +5,10 @@ nunca el audio ni la transcripción. Pasos:
 
 1. DuckDuckGo (versión HTML; sus resultados vienen sobre todo de Bing), sin
    redes sociales ni sitios que piden login (``-site:pinterest.com``…).
-2. Si hay sitios preferidos, a la vez una búsqueda en cada uno
-   (``… site:hbr.org``; DuckDuckGo no admite ``OR`` entre ``site:``).
+2. A la vez, una búsqueda en cada sitio preferido (``… site:hbr.org``;
+   DuckDuckGo no admite ``OR`` entre ``site:``) y, según el tema de la
+   pregunta, en un sitio de referencia: frontend → MDN, backend →
+   Stack Overflow, marketing → Think with Google.
 3. Si hay menos de 2 resultados (o DuckDuckGo pide verificación), Wikipedia.
 4. Orden: sitios preferidos, luego fuentes confiables (Wikipedia, gobierno,
    universidades, organismos, ciencia, prensa seria, documentación oficial),
@@ -38,7 +40,7 @@ PER_SITE = 2  # resultados que se toman de cada sitio preferido
 PAGE_TIMEOUT = 5
 PAGE_DEADLINE = 7  # segundos como máximo para todas las páginas (se leen a la vez)
 MAX_PAGE_BYTES = 1_500_000
-PAGE_EXCERPT_CHARS = 2000
+PAGE_EXCERPT_CHARS = 2500
 
 # Redes sociales y sitios con login: casi nunca se pueden leer y no aportan.
 EXCLUDED_SITES = ("pinterest.com", "facebook.com", "instagram.com", "tiktok.com", "x.com", "twitter.com")
@@ -52,7 +54,43 @@ TRUSTED_DOMAINS = (
     "theguardian.com", "elpais.com", "hbr.org", "mckinsey.com", "investopedia.com",
     "developer.apple.com", "support.apple.com", "learn.microsoft.com", "developer.mozilla.org",
     "docs.python.org", "cloud.google.com", "aws.amazon.com",
+    # Desarrollo (documentación oficial y referencias)
+    "web.dev", "developer.chrome.com", "react.dev", "nextjs.org", "vuejs.org", "angular.dev", "svelte.dev",
+    "nodejs.org", "typescriptlang.org", "python.org", "djangoproject.com", "fastapi.tiangolo.com",
+    "postgresql.org", "docs.docker.com", "kubernetes.io", "git-scm.com", "w3.org", "owasp.org",
+    "stackoverflow.com", "martinfowler.com", "developers.google.com", "developer.android.com",
+    "rust-lang.org", "go.dev", "scikit-learn.org", "pandas.pydata.org",
+    # Marketing y marketing science
+    "thinkwithgoogle.com", "ama.org", "marketingscience.info", "nielsen.com", "moz.com",
+    "searchengineland.com", "support.google.com", "bcg.com", "gartner.com", "forrester.com",
+    "pewresearch.org", "statista.com",
 )
+
+# Sitio de referencia que se busca con site: según el tema de la pregunta
+# (palabras ya en minúsculas y sin tildes; solo las que no se confunden con
+# lenguaje normal: nada de «next», «rest», «go» o «lead»).
+TOPIC_SITES = (
+    ("developer.mozilla.org", {
+        "javascript", "typescript", "react", "nextjs", "vue", "angular", "svelte", "css", "html", "dom",
+        "tailwind", "frontend", "webpack", "vite", "navegador", "browser", "accesibilidad", "accessibility",
+        "jsx", "tsx", "hooks", "flexbox",
+    }),
+    ("stackoverflow.com", {
+        "python", "django", "flask", "fastapi", "nodejs", "java", "golang", "rust", "sql", "postgres",
+        "postgresql", "mysql", "sqlite", "mongodb", "redis", "api", "apis", "graphql", "docker", "kubernetes",
+        "k8s", "aws", "azure", "gcp", "backend", "microservicios", "microservices", "oauth", "jwt", "kafka",
+        "linux", "bash", "git", "endpoint", "endpoints", "orm", "serverless", "pandas", "numpy",
+    }),
+    ("thinkwithgoogle.com", {
+        "marketing", "mercadeo", "campaign", "campaigns", "campana", "campanas", "brand", "branding", "seo",
+        "sem", "ctr", "cpc", "cpm", "cpa", "roas", "roi", "attribution", "atribucion", "conversion",
+        "conversiones", "conversions", "funnel", "embudo", "segmentation", "segmentacion", "ltv", "cac",
+        "churn", "retention", "retencion", "audience", "audiencia", "ads", "anuncios", "ga4", "cohort",
+        "cohorte", "uplift", "incrementality", "incrementalidad", "mmm", "pricing", "engagement", "leads",
+        "crm", "influencer", "influencers",
+    }),
+)
+MAX_TOPIC_SITES = 2
 _TRUSTED_TLDS = {"gov", "edu", "int", "mil"}
 _TRUSTED_SECOND_LEVEL = {"gov", "gob", "edu", "ac", "go", "govt"}  # gov.uk, gob.mx, edu.co, ac.uk…
 _UNREADABLE = ("youtube.com", "youtu.be", "vimeo.com", "spotify.com", "linkedin.com") + EXCLUDED_SITES
@@ -118,6 +156,12 @@ def parse_sites(text, limit=MAX_SITES):
         if _DOMAIN_RE.match(raw) and raw not in sites:
             sites.append(raw)
     return sites[:limit]
+
+
+def topic_sites(query):
+    """Sitios de referencia para el tema de la pregunta (como mucho ``MAX_TOPIC_SITES``)."""
+    words = set(tokenize(query))
+    return [site for site, keywords in TOPIC_SITES if words & keywords][:MAX_TOPIC_SITES]
 
 
 def build_queries(query, sites=()):
@@ -387,17 +431,22 @@ def read_pages(results, query, count, fetch_page=_fetch_page, deadline=PAGE_DEAD
 
 # ---------- Búsqueda ----------
 
-def search(query, language="en", limit=4, fetch=_fetch, sites=(), read=0, fetch_page=_fetch_page):
+def search(query, language="en", limit=4, fetch=_fetch, sites=(), read=0, fetch_page=_fetch_page, topics=True):
     """Hasta ``limit`` resultados [{"title", "url", "snippet", "trusted", "content"?}].
 
     ``sites``: dominios preferidos (lista o texto «hbr.org, who.int»).
     ``read``: cuántas de las mejores páginas abrir y leer (0 = solo el resumen).
+    ``topics``: añadir el sitio de referencia del tema (MDN, Stack Overflow…).
     ``fetch`` / ``fetch_page`` se pueden sustituir en tests.
     """
     query = (query or "").strip()
     if not query:
         return []
     sites = parse_sites(sites)
+    if topics:
+        for site in topic_sites(query):
+            if len(sites) < MAX_SITES and site not in sites:
+                sites.append(site)
     preferred_queries, general_query = build_queries(query, sites)
 
     def run(search_query):

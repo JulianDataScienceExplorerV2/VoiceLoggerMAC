@@ -184,6 +184,14 @@ PROMPTS = {
             "DUE: the deadline as YYYY-MM-DD if one was mentioned (today is {today}), or -.\n"
             "Write at most 10 lines and nothing else. If there are no action items, write: - none"
         ),
+        "questions": (
+            "From the latest part of the meeting below, list the important questions that were asked or "
+            "raised. If someone asked it, copy it word for word. Do not repeat the questions already "
+            "listed, even reworded. One per line, starting with '- ', at most {limit}, and nothing else. "
+            "If there are no new questions, write: - none"
+        ),
+        "known": "Questions already listed:",
+        "latest": "Latest part of the meeting:",
         "trimmed": "(… transcript trimmed: only the most recent part …)",
     },
     "es": {
@@ -280,6 +288,14 @@ PROMPTS = {
             "FECHA: la fecha límite como AAAA-MM-DD si se mencionó (hoy es {today}), o -.\n"
             "Escribe como máximo 10 líneas y nada más. Si no hay tareas, escribe: - ninguna"
         ),
+        "questions": (
+            "De la parte más reciente de la reunión, abajo, lista las preguntas importantes que se hicieron "
+            "o plantearon. Si alguien la hizo, cópiala tal cual. No repitas las preguntas ya listadas, ni "
+            "con otras palabras. Una por línea, empezando con '- ', como máximo {limit}, y nada más. "
+            "Si no hay preguntas nuevas, escribe: - ninguna"
+        ),
+        "known": "Preguntas ya listadas:",
+        "latest": "Parte más reciente de la reunión:",
         "trimmed": "(… transcripción recortada: solo la parte más reciente …)",
     },
 }
@@ -837,8 +853,9 @@ OPEN_LENGTH = {
 # ---------- Resultados de internet en el prompt ----------
 
 # Presupuesto del bloque de internet: con páginas leídas hay más texto útil.
-WEB_TOKENS = 2200
-WEB_READ_PAGES = 2  # páginas que se abren y leen (además del resumen del buscador)
+WEB_TOKENS = 3200
+WEB_RESULTS = 6  # resultados que se le pasan a Qwen
+WEB_READ_PAGES = 3  # páginas que se abren y leen (además del resumen del buscador)
 
 
 def _web_block(results, labels):
@@ -902,7 +919,7 @@ def open_question(text, question, language="en", notes="", memory="", detail="lo
         if search is None:
             from web_search import search
         try:
-            results = search(question, language=language, sites=sites, read=read)
+            results = search(question, language=language, sites=sites, read=read, limit=WEB_RESULTS)
         except Exception:
             results = []  # sin internet: responde con la reunión y lo que sabe
     text = _tail_text((text or "").strip(), QA_MAX_CHARS, language)
@@ -967,7 +984,7 @@ def extend_with_web(question, previous="", notes="", language="en", detail="long
         raise ValueError("empty question")
     if search is None:
         from web_search import search
-    results = search(question, language=language, sites=sites, read=read)
+    results = search(question, language=language, sites=sites, read=read, limit=WEB_RESULTS)
     if not results:
         empty = "No encontré resultados en internet para esa pregunta." if language == "es" else \
             "I couldn't find web results for that question."
@@ -985,10 +1002,18 @@ def extend_with_web(question, previous="", notes="", language="en", detail="long
 # 2. "complement": usa esa búsqueda (casi siempre ya lista) y Qwen agrega solo
 #    lo que internet aporta: «Puede complementar tu pregunta».
 
-COMPLEMENT_MAX_TOKENS = {"long": 400, "short": 200}
+COMPLEMENT_MAX_TOKENS = {"long": 650, "short": 250}
 COMPLEMENT_LENGTH = {
-    "en": {"long": "At most about 120 words: a short paragraph or a few bullets.", "short": "1-3 sentences."},
-    "es": {"long": "Como mucho unas 120 palabras: un párrafo corto o pocas viñetas.", "short": "1-3 frases."},
+    "en": {
+        "long": "About 150-250 words: build more elaborate ideas, examples or steps with what the web adds, "
+                "in short paragraphs or bullets.",
+        "short": "2-4 sentences.",
+    },
+    "es": {
+        "long": "Unas 150-250 palabras: arma ideas más elaboradas, ejemplos o pasos con lo que aporta internet, "
+                "en párrafos cortos o viñetas.",
+        "short": "2-4 frases.",
+    },
 }
 PREFETCH_TIMEOUT = 40  # segundos; la búsqueda tiene sus propios límites (~20 s en el peor caso)
 _NOTHING_NEW_RE = re.compile(r"^\W*(nothing new|nada nuevo)\b", re.IGNORECASE)
@@ -1009,7 +1034,7 @@ def prefetch_web(question, language="en", sites="", read=WEB_READ_PAGES, search=
         return
     while len(_web_prefetch) >= 8:  # las que nunca se usaron (p. ej. la respuesta falló)
         _web_prefetch.pop(next(iter(_web_prefetch)))
-    _web_prefetch[key] = _web_pool.submit(search, key[0], language=language, sites=sites, read=read)
+    _web_prefetch[key] = _web_pool.submit(search, key[0], language=language, sites=sites, read=read, limit=WEB_RESULTS)
 
 
 def _web_results(question, language, sites, read, search):
@@ -1018,7 +1043,7 @@ def _web_results(question, language, sites, read, search):
     if future is None:
         if search is None:
             from web_search import search
-        return search(question, language=language, sites=sites, read=read)
+        return search(question, language=language, sites=sites, read=read, limit=WEB_RESULTS)
     return future.result(timeout=PREFETCH_TIMEOUT)
 
 
@@ -1065,6 +1090,68 @@ def complement_with_web(question, previous="", notes="", language="en", detail="
     if _NOTHING_NEW_RE.match(answer) and len(answer) < 80:
         answer = ""
     return {"answer": answer, "sources": _sources(results)}
+
+
+# ---------- Preguntas en vivo (cada pocos segundos) ----------
+#
+# Petición liviana, aparte del resumen: solo la parte más reciente de la
+# reunión y las preguntas ya listadas; responde con pocas líneas, así cuesta
+# unos pocos segundos y puede correr seguido.
+
+QUESTIONS_TEXT_TOKENS = 450
+QUESTIONS_KNOWN_TOKENS = 250
+QUESTIONS_MAX = 4
+QUESTIONS_MAX_TOKENS = 160
+
+
+def parse_questions(raw, limit=QUESTIONS_MAX):
+    """Líneas «- pregunta» del modelo → lista limpia (sin «ninguna», razonamiento ni repetidas)."""
+    questions, seen = [], set()
+    for line in (raw or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        item = _LIST_PREFIX_RE.sub("", line).strip().strip('"“”«»*').strip()
+        if not item or _is_empty_item(item) or looks_like_reasoning(item):
+            continue
+        if len(item.split()) < 3:
+            continue
+        if not item.endswith("?"):
+            item = item.rstrip(".:;") + "?"
+        key = re.sub(r"\W+", "", item.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        questions.append(item[:300])
+        if len(questions) >= limit:
+            break
+    return questions
+
+
+def _questions_blocking(text, known, language):
+    prompts = _prompts(language)
+    blocks = []
+    if known:
+        listed = "\n".join(f"- {question}" for question in known)
+        blocks.append(f"{prompts['known']}\n{fit_tokens(listed, QUESTIONS_KNOWN_TOKENS, keep='tail')}")
+    blocks.append(f"{prompts['latest']}\n{fit_tokens(text, QUESTIONS_TEXT_TOKENS, keep='tail')}")
+    blocks.append(prompts["questions"].format(limit=QUESTIONS_MAX))
+    raw = _generate(_system_prompt(language), "\n\n".join(blocks), max_tokens=QUESTIONS_MAX_TOKENS, temp=0.2)
+    return parse_questions(raw)
+
+
+def _run_questions(text, known, language):
+    _ensure_model()
+    return _questions_blocking(text, known, language)
+
+
+def live_questions(text="", known=(), language="en"):
+    """Preguntas nuevas de la parte más reciente de la reunión (sin repetir ``known``)."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    known = [question.strip() for question in known if question and question.strip()]
+    return _executor.submit(_run_questions, text, known, language).result()
 
 
 # ---------- Tareas para Recordatorios ----------
@@ -1189,6 +1276,9 @@ def handle_request(request):
             request.get("question"), request.get("previous"), request.get("notes"), language,
             request.get("detail") or "long", **_web_options(request),
         )
+    if kind == "questions":
+        known = (request.get("known") or "").splitlines()
+        return {"questions": live_questions(request.get("text"), known, language)}
     if kind == "complement":
         return complement_with_web(
             request.get("question"), request.get("previous"), request.get("notes"), language,

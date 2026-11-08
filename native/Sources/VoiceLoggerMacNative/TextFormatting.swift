@@ -171,6 +171,15 @@ enum LiteralQuestions {
             .map(String.init)
     }
 
+    /// Same question with other words or punctuation ("What's the budget?" /
+    /// "What is the budget"): 75 % of the shorter one's words are in the other.
+    static func isSimilar(_ a: String, _ b: String) -> Bool {
+        let first = Set(words(a)), second = Set(words(b))
+        let shorter = min(first.count, second.count)
+        guard shorter >= 3 else { return first == second }
+        return Double(first.intersection(second).count) >= 0.75 * Double(shorter)
+    }
+
     /// True if `question` matches the end of a question said in the meeting:
     /// at least 75 % of its words are there, and they are at least half of
     /// that stretch (fillers like "so" or "bueno" before it don't matter).

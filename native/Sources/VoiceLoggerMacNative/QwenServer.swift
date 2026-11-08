@@ -93,6 +93,10 @@ actor QwenServer {
         let tasks: [MeetingTask]
     }
 
+    private struct QuestionsPayload: Decodable {
+        let questions: [String]
+    }
+
     private let bridge: PythonBridge
     private let logURL: URL
     private var model: String
@@ -180,6 +184,15 @@ actor QwenServer {
         ])
         let result = try JSONDecoder().decode(Envelope<Extended>.self, from: data).result
         return (result.answer.trimmingCharacters(in: .whitespacesAndNewlines), result.sources)
+    }
+
+    /// New questions in the latest part of the meeting (`text`), not repeating
+    /// `known`. Light request (short prompt, a few lines out) for the live loop.
+    func questions(text: String, known: [String], lang: String) async throws -> [String] {
+        let data = try await send([
+            "type": "questions", "text": text, "known": known.joined(separator: "\n"), "lang": lang,
+        ])
+        return try JSONDecoder().decode(Envelope<QuestionsPayload>.self, from: data).result.questions
     }
 
     /// Action items of the meeting (`today` = YYYY-MM-DD, to resolve "next Friday").
