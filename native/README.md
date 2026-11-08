@@ -273,14 +273,14 @@ los ajustes; después, una línea por evento:
 ```
 10:42:03.120 [WHISPER] 7.8 s de audio en 640 ms (×12 tiempo real) · codificar 180 ms · decodificar 410 ms · reintentos 0 · normal
 10:42:03.125 [BLOQUE] 7.8 s · normal · ok · 21 palabras · listo en 655 ms
-10:42:10.402 [IA] 214 tokens en 4.31 s (58 tok/s escribiendo) · 1.ª palabra 520 ms · prompt 1630 car · ayudante sí · prefijo reutilizado · …
+10:42:10.402 [IA] 214 tokens en 4.31 s (58 tok/s escribiendo) · 1.ª palabra 520 ms · prompt 1630 car · ayudante sí · KV 8 bits desde 1024 · …
 10:42:10.410 [IA] respuesta Ideas (Swift) en 4.40 s · 1187 car · 0 fuentes
 10:42:14.900 [WEB] 6 resultados (3 confiables, 3 páginas leídas) en 2.85 s · dominios: react.dev, …
 10:43:00.001 [MEMORIA] app 5210 MB · 0 bloques esperando a Whisper
 ```
 
 Registra tiempos de Whisper (por bloque y reintentos), de cada petición a la IA (resumen, preguntas, respuestas,
-complemento, tareas), carga de modelos, uso del ayudante y de la caché del prompt, búsquedas web, memoria cada minuto
+complemento, tareas), carga de modelos, uso del ayudante, búsquedas web, memoria cada minuto
 y errores. **No guarda lo que se dice en la reunión** (ni transcripción, ni preguntas, ni respuestas): solo tiempos,
 tamaños y conteos, así se puede compartir para depurar.
 
@@ -303,10 +303,10 @@ tamaños y conteos, así se puede compartir para depurar.
     2. **Decodificación especulativa** (⚙ «Acelerar con un modelo ayudante», activada): Qwen3 0.6B (o Qwen2.5 0.5B)
        propone 3 palabras y el modelo principal las confirma de una vez. Misma calidad, escribe más rápido;
        +~0,4 GB de RAM y una descarga la primera vez. No aplica a LFM2.5.
-    3. **Caché del prompt fijo:** las instrucciones y tu `qwen_context.txt` se procesan una vez por variante
-       (Reunión / Ideas e idioma) y cada petición parte de una copia (`ChatSession.fork`).
-    4. **Memoria de trabajo (KV) en 8 bits** a partir de 1024 tokens: la mitad de memoria en prompts largos
+    3. **Memoria de trabajo (KV) en 8 bits** a partir de 1024 tokens: la mitad de memoria en prompts largos
        (resumen, respuestas con páginas web), casi sin pérdida; los cortos (preguntas en vivo) no cambian.
+    - La caché del prompt fijo (procesar las instrucciones una sola vez) queda pendiente: `ChatSession.fork` aún no
+      está en la versión publicada de MLX Swift.
     - Si alguna optimización falla en tu Mac, esa respuesta se repite en modo normal y el modelo sigue así hasta
       cambiarlo o liberarlo: nunca se queda sin responder por una optimización.
     - Debajo de cada respuesta sale el motor y los segundos (p. ej. «Swift · 3,1 s») para compararlos.

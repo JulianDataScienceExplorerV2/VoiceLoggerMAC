@@ -20,10 +20,7 @@ typealias PartialText = @Sendable (String) -> Void
 /// 2. **Speculative decoding**: a small model of the same family proposes a few
 ///    tokens and the main model checks them in one pass. Same output quality,
 ///    faster writing; ~0.4 GB more RAM. Off if the helper cannot be loaded.
-/// 3. **Prompt prefix cache**: the system prompt (instructions + context file)
-///    is prefilled once per variant; later requests start from a copy of that
-///    cache (`ChatSession.fork`) and only prefill their own text.
-/// 4. **8-bit KV cache** past 1024 tokens: about half the working memory of long
+/// 3. **8-bit KV cache** past 1024 tokens: about half the working memory of long
 ///    prompts (live summary, answers with web pages), nearly lossless.
 ///
 /// Memory: prompt prefill in 512-token steps, MLX buffer cache capped at
@@ -53,8 +50,6 @@ actor LocalLLM {
     static let kvBits = 8
     /// Short prompts (live questions) keep a full-precision cache.
     static let quantizedKVStart = 1024
-    /// System prompt variants kept prefilled (meeting / ideas, per language).
-    static let maxCachedPrefixes = 3
     /// Seconds between partial-text updates (the UI does not need every token).
     static let partialInterval: Duration = .milliseconds(100)
 
@@ -66,10 +61,8 @@ actor LocalLLM {
     /// The helper could not be loaded (e.g. offline the first time): not retried
     /// on every request, only after a model change or unload.
     private var draftUnavailable = false
-    /// Sessions whose cache already holds a system prompt, most recent last.
-    private var prefixes: [(key: String, session: ChatSession)] = []
-    /// An optimized generation failed: plain generation (no helper, prefix
-    /// cache or 8-bit cache) until the model changes or is unloaded.
+    /// An optimized generation failed: plain generation (no helper or 8-bit
+    /// cache) until the model changes or is unloaded.
     private var safeMode = false
     /// One generation at a time, in arrival order (like the single model
     /// thread of summarizer.py): the GPU is never shared by two answers.
@@ -96,7 +89,6 @@ actor LocalLLM {
         useDraft = enabled
         draft = nil
         draftUnavailable = false
-        prefixes = []
         safeMode = false
         Memory.clearCache()
     }
@@ -111,7 +103,6 @@ actor LocalLLM {
         container = nil
         draft = nil
         draftUnavailable = false
-        prefixes = []
         safeMode = false
         Memory.clearCache()
         return wasLoaded
@@ -212,37 +203,6 @@ actor LocalLLM {
         )
     }
 
-    /// A session whose cache already holds `system`, prefilled once with a
-    /// one-token reply; nil if that fails (the caller then starts from scratch).
-    private func prefixSession(
-        system: String, container: ModelContainer, speculative: SpeculativeDecodingConfig?
-    ) async -> (session: ChatSession, reused: Bool)? {
-        let key = "\(speculative != nil)\u{1F}\(system)"
-        if let index = prefixes.firstIndex(where: { $0.key == key }) {
-            let entry = prefixes.remove(at: index)
-            prefixes.append(entry)  // most recently used last
-            return (entry.session, true)
-        }
-        let base = newSession(
-            container, system: system, speculative: speculative,
-            parameters: makeParameters(maxTokens: 1, temperature: 0, penalizeRepeats: false)
-        )
-        let started = Date()
-        do {
-            _ = try await base.respond(to: "OK")
-        } catch {
-            SessionLog.shared.log("IA", "caché del prompt no disponible: \(error.localizedDescription)")
-            return nil
-        }
-        prefixes.append((key, base))
-        if prefixes.count > Self.maxCachedPrefixes { prefixes.removeFirst() }
-        SessionLog.shared.log(
-            "IA", "caché del prompt: variante nueva (\(system.count) car de instrucciones) preparada en "
-                + SessionLog.seconds(Date().timeIntervalSince(started))
-        )
-        return (base, false)
-    }
-
     /// One answer: `system` + `user` → text without reasoning or code fences.
     /// `partial` receives the text so far while it is written (~10 times a second).
     func generate(
@@ -260,25 +220,14 @@ actor LocalLLM {
                 }
                 let params = makeParameters(maxTokens: maxTokens, temperature: temperature, penalizeRepeats: penalizeRepeats)
                 // One request = system prompt + one user message, as in Python.
-                // The system prompt comes from the prefilled cache when there is one.
-                let session: ChatSession
-                let prefix: String
-                if let prefixed = await prefixSession(system: system, container: container, speculative: speculative) {
-                    session = await prefixed.session.fork(history: [])
-                    session.generateParameters = params
-                    prefix = prefixed.reused ? "reutilizado" : "nuevo"
-                } else {
-                    session = newSession(container, system: system, speculative: speculative, parameters: params)
-                    prefix = "no"
-                }
-                let mode = "ayudante \(speculative == nil ? "no" : "sí") · prefijo \(prefix) · KV 8 bits desde \(Self.quantizedKVStart)"
+                let session = newSession(container, system: system, speculative: speculative, parameters: params)
+                let mode = "ayudante \(speculative == nil ? "no" : "sí") · KV 8 bits desde \(Self.quantizedKVStart)"
                 return try await stream(session, user: user, container: container, mode: mode, partial: partial)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
                 // Some optimization does not work here: answer the plain way.
                 safeMode = true
-                prefixes = []
                 draft = nil
                 SessionLog.shared.log(
                     "ERROR", "una optimización falló (\(error.localizedDescription)): modo normal para este modelo"
