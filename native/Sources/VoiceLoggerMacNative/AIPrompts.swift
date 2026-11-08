@@ -99,18 +99,27 @@ struct AIPrompts: Sendable {
         question: "Question:",
         web: "Web search results:",
         reliable: "reliable source",
-        openInstruction: "Answer as a brainstorming partner: use the meeting as context plus your own knowledge and "
-            + "the web results to bring useful ideas, options, examples and next steps. Make clear what "
-            + "comes from the meeting and what is general knowledge, and cite web facts with their number, "
-            + "like [1] or [2]. If sources disagree, trust the ones marked (reliable source).",
-        openInstructionNoWeb: "Answer as a brainstorming partner: use the meeting as context plus your own knowledge to "
-            + "bring useful ideas, options, examples and next steps. Make clear what comes from the "
-            + "meeting and what is general knowledge.",
+        openInstruction: "Answer as an expert who explains things clearly, so the answer can be shared as it is. Adapt the "
+            + "format to the question: for how-to questions, give numbered step-by-step instructions; for 'which is "
+            + "best' or 'what should I choose' questions, give a clear recommendation first and then explain why, "
+            + "comparing it with the alternatives; for other questions, explain the reasoning in well-written "
+            + "paragraphs with concrete examples. Explain the why behind each point and do not use labels such as "
+            + "'Key insight' or 'Next step'. Use the meeting as context only where it is relevant (say so briefly), "
+            + "add your own knowledge, and cite facts from the web results with their number, like [1] or [2]. If "
+            + "sources disagree, trust the ones marked (reliable source).",
+        openInstructionNoWeb: "Answer as an expert who explains things clearly, so the answer can be shared as it is. Adapt the "
+            + "format to the question: for how-to questions, give numbered step-by-step instructions; for 'which is "
+            + "best' or 'what should I choose' questions, give a clear recommendation first and then explain why, "
+            + "comparing it with the alternatives; for other questions, explain the reasoning in well-written "
+            + "paragraphs with concrete examples. Explain the why behind each point and do not use labels such as "
+            + "'Key insight' or 'Next step'. Use the meeting as context only where it is relevant (say so briefly) "
+            + "and add your own knowledge.",
         given: "Answer already given:",
-        complement: "Using only the web results, add what they contribute to the answer already given: new "
-            + "facts, figures, examples or corrections. Do not repeat the answer already given. Cite web "
-            + "facts with their number, like [1] or [2]. If sources disagree, trust the ones marked "
-            + "(reliable source). If the web results add nothing useful, reply only: NOTHING NEW",
+        complement: "Using only the web results, add what they contribute to the answer already given: new facts, "
+            + "figures, examples or corrections, explained in the same style (steps or explanatory paragraphs, no "
+            + "labels). Do not repeat the answer already given. Cite web facts with their number, like [1] or [2]. "
+            + "If sources disagree, trust the ones marked (reliable source). If the web results add nothing useful, "
+            + "reply only: NOTHING NEW",
         previous: "Answer based on the meeting:",
         extend: "Extend the answer with useful information from the web results. Keep what the "
             + "meeting said, clearly separate it from what comes from the web, and cite web facts "
@@ -123,8 +132,8 @@ struct AIPrompts: Sendable {
             + "and the open points or next steps. Use short paragraphs or bullet points "
             + "(about 150-300 words). If the answer is not there, say so clearly instead of "
             + "making it up.",
-        openLong: "About 150-300 words, short paragraphs or bullets.",
-        openShort: "2-4 sentences.",
+        openLong: "Be as complete as the question needs (about 250-500 words).",
+        openShort: "Keep it short: 3-5 sentences, or at most 5 steps.",
         complementLong: "About 150-250 words: build more elaborate ideas, examples or steps with what the web adds, "
             + "in short paragraphs or bullets.",
         complementShort: "2-4 sentences."
@@ -179,19 +188,27 @@ struct AIPrompts: Sendable {
         question: "Pregunta:",
         web: "Resultados de la búsqueda en internet:",
         reliable: "fuente confiable",
-        openInstruction: "Responde como compañero de lluvia de ideas: usa la reunión como contexto más tu propio "
-            + "conocimiento y los resultados de internet para aportar ideas, opciones, ejemplos y próximos "
-            + "pasos. Deja claro qué viene de la reunión y qué es conocimiento general, y cita los datos de "
-            + "internet con su número, como [1] o [2]. Si las fuentes no coinciden, confía en las marcadas "
-            + "(fuente confiable).",
-        openInstructionNoWeb: "Responde como compañero de lluvia de ideas: usa la reunión como contexto más tu propio "
-            + "conocimiento para aportar ideas, opciones, ejemplos y próximos pasos. Deja claro qué viene "
-            + "de la reunión y qué es conocimiento general.",
+        openInstruction: "Responde como un experto que explica con claridad, para que la respuesta se pueda compartir tal "
+            + "cual. Adapta el formato a la pregunta: si es de cómo hacer algo, da instrucciones paso a paso "
+            + "numeradas; si es de cuál es mejor o qué elegir, da primero una recomendación clara y luego explica "
+            + "por qué, comparándola con las alternativas; en las demás, explica el razonamiento en párrafos bien "
+            + "escritos con ejemplos concretos. Explica el porqué de cada punto y no uses etiquetas como «Idea "
+            + "clave» o «Próximo paso». Usa la reunión como contexto solo donde sea relevante (dilo brevemente), "
+            + "añade tu propio conocimiento y cita los datos de internet con su número, como [1] o [2]. Si las "
+            + "fuentes no coinciden, confía en las marcadas (fuente confiable).",
+        openInstructionNoWeb: "Responde como un experto que explica con claridad, para que la respuesta se pueda compartir tal "
+            + "cual. Adapta el formato a la pregunta: si es de cómo hacer algo, da instrucciones paso a paso "
+            + "numeradas; si es de cuál es mejor o qué elegir, da primero una recomendación clara y luego explica "
+            + "por qué, comparándola con las alternativas; en las demás, explica el razonamiento en párrafos bien "
+            + "escritos con ejemplos concretos. Explica el porqué de cada punto y no uses etiquetas como «Idea "
+            + "clave» o «Próximo paso». Usa la reunión como contexto solo donde sea relevante (dilo brevemente) y "
+            + "añade tu propio conocimiento.",
         given: "Respuesta ya dada:",
-        complement: "Usando solo los resultados de internet, agrega lo que aportan a la respuesta ya dada: datos "
-            + "nuevos, cifras, ejemplos o correcciones. No repitas la respuesta ya dada. Cita los datos de "
-            + "internet con su número, como [1] o [2]. Si las fuentes no coinciden, confía en las marcadas "
-            + "(fuente confiable). Si los resultados no aportan nada útil, responde solo: NADA NUEVO",
+        complement: "Usando solo los resultados de internet, agrega lo que aportan a la respuesta ya dada: datos nuevos, "
+            + "cifras, ejemplos o correcciones, explicados con el mismo estilo (pasos o párrafos explicativos, sin "
+            + "etiquetas). No repitas la respuesta ya dada. Cita los datos de internet con su número, como [1] o "
+            + "[2]. Si las fuentes no coinciden, confía en las marcadas (fuente confiable). Si los resultados no "
+            + "aportan nada útil, responde solo: NADA NUEVO",
         previous: "Respuesta basada en la reunión:",
         extend: "Amplía la respuesta con información útil de los resultados de internet. Conserva lo "
             + "que dijo la reunión, sepáralo claramente de lo que viene de internet y cita los datos "
@@ -203,8 +220,8 @@ struct AIPrompts: Sendable {
             + "el contexto, qué se dijo (y quién, si se sabe), las decisiones, cifras o fechas, y "
             + "los puntos abiertos o próximos pasos. Usa párrafos cortos o viñetas (unas 150-300 "
             + "palabras). Si la respuesta no aparece, dilo claramente en vez de inventarla.",
-        openLong: "Unas 150-300 palabras, en párrafos cortos o viñetas.",
-        openShort: "2-4 frases.",
+        openLong: "Sé tan completo como la pregunta lo necesite (unas 250-500 palabras).",
+        openShort: "Sé breve: 3-5 frases, o como mucho 5 pasos.",
         complementLong: "Unas 150-250 palabras: arma ideas más elaboradas, ejemplos o pasos con lo que aporta internet, "
             + "en párrafos cortos o viñetas.",
         complementShort: "2-4 frases."

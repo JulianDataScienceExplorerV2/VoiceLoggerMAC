@@ -140,22 +140,31 @@ PROMPTS = {
             "web": "Web search results:",
             "reliable": "reliable source",
             "open_instruction": (
-                "Answer as a brainstorming partner: use the meeting as context plus your own knowledge and "
-                "the web results to bring useful ideas, options, examples and next steps. Make clear what "
-                "comes from the meeting and what is general knowledge, and cite web facts with their number, "
-                "like [1] or [2]. If sources disagree, trust the ones marked (reliable source)."
+                "Answer as an expert who explains things clearly, so the answer can be shared as it is. Adapt the "
+                "format to the question: for how-to questions, give numbered step-by-step instructions; for "
+                "'which is best' or 'what should I choose' questions, give a clear recommendation first and then "
+                "explain why, comparing it with the alternatives; for other questions, explain the reasoning in "
+                "well-written paragraphs with concrete examples. Explain the why behind each point and do not use "
+                "labels such as 'Key insight' or 'Next step'. Use the meeting as context only where it is "
+                "relevant (say so briefly), add your own knowledge, and cite facts from the web results with "
+                "their number, like [1] or [2]. If sources disagree, trust the ones marked (reliable source)."
             ),
             "open_instruction_noweb": (
-                "Answer as a brainstorming partner: use the meeting as context plus your own knowledge to "
-                "bring useful ideas, options, examples and next steps. Make clear what comes from the "
-                "meeting and what is general knowledge."
+                "Answer as an expert who explains things clearly, so the answer can be shared as it is. Adapt the "
+                "format to the question: for how-to questions, give numbered step-by-step instructions; for "
+                "'which is best' or 'what should I choose' questions, give a clear recommendation first and then "
+                "explain why, comparing it with the alternatives; for other questions, explain the reasoning in "
+                "well-written paragraphs with concrete examples. Explain the why behind each point and do not use "
+                "labels such as 'Key insight' or 'Next step'. Use the meeting as context only where it is "
+                "relevant (say so briefly) and add your own knowledge."
             ),
             "given": "Answer already given:",
             "complement": (
-                "Using only the web results, add what they contribute to the answer already given: new "
-                "facts, figures, examples or corrections. Do not repeat the answer already given. Cite web "
-                "facts with their number, like [1] or [2]. If sources disagree, trust the ones marked "
-                "(reliable source). If the web results add nothing useful, reply only: NOTHING NEW"
+                "Using only the web results, add what they contribute to the answer already given: new facts, "
+                "figures, examples or corrections, explained in the same style (steps or explanatory paragraphs, "
+                "no labels). Do not repeat the answer already given. Cite web facts with their number, like [1] "
+                "or [2]. If sources disagree, trust the ones marked (reliable source). If the web results add "
+                "nothing useful, reply only: NOTHING NEW"
             ),
             "previous": "Answer based on the meeting:",
             "extend": (
@@ -243,23 +252,31 @@ PROMPTS = {
             "web": "Resultados de la búsqueda en internet:",
             "reliable": "fuente confiable",
             "open_instruction": (
-                "Responde como compañero de lluvia de ideas: usa la reunión como contexto más tu propio "
-                "conocimiento y los resultados de internet para aportar ideas, opciones, ejemplos y próximos "
-                "pasos. Deja claro qué viene de la reunión y qué es conocimiento general, y cita los datos de "
-                "internet con su número, como [1] o [2]. Si las fuentes no coinciden, confía en las marcadas "
-                "(fuente confiable)."
+                "Responde como un experto que explica con claridad, para que la respuesta se pueda compartir tal "
+                "cual. Adapta el formato a la pregunta: si es de cómo hacer algo, da instrucciones paso a paso "
+                "numeradas; si es de cuál es mejor o qué elegir, da primero una recomendación clara y luego "
+                "explica por qué, comparándola con las alternativas; en las demás, explica el razonamiento en "
+                "párrafos bien escritos con ejemplos concretos. Explica el porqué de cada punto y no uses "
+                "etiquetas como «Idea clave» o «Próximo paso». Usa la reunión como contexto solo donde sea "
+                "relevante (dilo brevemente), añade tu propio conocimiento y cita los datos de internet con su "
+                "número, como [1] o [2]. Si las fuentes no coinciden, confía en las marcadas (fuente confiable)."
             ),
             "open_instruction_noweb": (
-                "Responde como compañero de lluvia de ideas: usa la reunión como contexto más tu propio "
-                "conocimiento para aportar ideas, opciones, ejemplos y próximos pasos. Deja claro qué viene "
-                "de la reunión y qué es conocimiento general."
+                "Responde como un experto que explica con claridad, para que la respuesta se pueda compartir tal "
+                "cual. Adapta el formato a la pregunta: si es de cómo hacer algo, da instrucciones paso a paso "
+                "numeradas; si es de cuál es mejor o qué elegir, da primero una recomendación clara y luego "
+                "explica por qué, comparándola con las alternativas; en las demás, explica el razonamiento en "
+                "párrafos bien escritos con ejemplos concretos. Explica el porqué de cada punto y no uses "
+                "etiquetas como «Idea clave» o «Próximo paso». Usa la reunión como contexto solo donde sea "
+                "relevante (dilo brevemente) y añade tu propio conocimiento."
             ),
             "given": "Respuesta ya dada:",
             "complement": (
                 "Usando solo los resultados de internet, agrega lo que aportan a la respuesta ya dada: datos "
-                "nuevos, cifras, ejemplos o correcciones. No repitas la respuesta ya dada. Cita los datos de "
-                "internet con su número, como [1] o [2]. Si las fuentes no coinciden, confía en las marcadas "
-                "(fuente confiable). Si los resultados no aportan nada útil, responde solo: NADA NUEVO"
+                "nuevos, cifras, ejemplos o correcciones, explicados con el mismo estilo (pasos o párrafos "
+                "explicativos, sin etiquetas). No repitas la respuesta ya dada. Cita los datos de internet con su "
+                "número, como [1] o [2]. Si las fuentes no coinciden, confía en las marcadas (fuente confiable). "
+                "Si los resultados no aportan nada útil, responde solo: NADA NUEVO"
             ),
             "previous": "Respuesta basada en la reunión:",
             "extend": (
@@ -845,8 +862,8 @@ def ask_question(text, question, language="es", notes="", memory="", detail="lon
 
 # Respuestas en modo "Ideas" (lluvia de ideas): reunión + conocimiento + internet.
 OPEN_LENGTH = {
-    "en": {"long": "About 150-300 words, short paragraphs or bullets.", "short": "2-4 sentences."},
-    "es": {"long": "Unas 150-300 palabras, en párrafos cortos o viñetas.", "short": "2-4 frases."},
+    "en": {"long": "Be as complete as the question needs (about 250-500 words).", "short": "Keep it short: 3-5 sentences, or at most 5 steps."},
+    "es": {"long": "Sé tan completo como la pregunta lo necesite (unas 250-500 palabras).", "short": "Sé breve: 3-5 frases, o como mucho 5 pasos."},
 }
 
 

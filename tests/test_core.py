@@ -727,7 +727,9 @@ class OpenModeTests(unittest.TestCase):
         self.assertIn("brainstorming meeting", system)
         self.assertNotIn("Use only what the transcript says", system)
         self.assertIn("[1] Growth loops — https://x.org/g", user)
-        self.assertIn("brainstorming partner", user)
+        self.assertIn("numbered step-by-step instructions", user)
+        self.assertIn("give a clear recommendation first and then explain why", user)
+        self.assertIn("do not use labels", user)
         self.assertIn("Notes of the meeting so far", user)
 
     def test_offline_still_answers(self):
@@ -776,7 +778,7 @@ class TwoStepIdeasTests(unittest.TestCase):
         gen, ctx, ensure = self._patched("Try a pilot.")
         with gen as fake, ctx, ensure:
             summarizer.open_question("[10:00] we need users", "How do we grow?", "en", web=False)
-        self.assertIn("your own knowledge to bring", fake.call_args[0][1])
+        self.assertIn("add your own knowledge.", fake.call_args[0][1])
         self.assertNotIn("web results", fake.call_args[0][1])
 
     def test_ask_prefetches_while_answering_and_complement_reuses_it(self):

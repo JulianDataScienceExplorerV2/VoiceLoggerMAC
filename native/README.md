@@ -216,6 +216,10 @@ Junto a la caja de preguntas eliges cómo responde la IA:
   resultados de internet**; propone opciones, ejemplos y próximos pasos, separa lo dicho en la reunión del
   conocimiento general y cita las fuentes web [1], [2]. Sin internet (o con el permiso apagado) responde igual con
   la reunión y lo que sabe.
+  **Formato según la pregunta**, explicando el porqué para poder compartir la respuesta tal cual: si es «cómo hacer
+  algo», **pasos numerados**; si es «cuál es mejor / qué elijo», **primero la recomendación y luego por qué**, comparada
+  con las alternativas; en las demás, **párrafos explicativos con ejemplos**. Sin etiquetas tipo «Idea clave»
+  (el modo **Reunión** sí mantiene su resumen organizado por puntos).
   **En dos pasos, para no esperar:** Qwen responde **primero** con la reunión y lo que sabe; mientras escribe, la
   búsqueda en internet ya está corriendo (es solo red, no usa la IA). Al terminar aparece debajo
   **«🌐 Puede complementar tu pregunta»** con lo que internet agrega (datos, cifras, ejemplos o correcciones, sin
