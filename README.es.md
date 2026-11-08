@@ -226,3 +226,11 @@ Mejoras planificadas:
 - **Error con el resumen (`mlx_lm` no instalado)** → reinstala dependencias: `uv pip install --python .venv/bin/python -r requirements.txt` (incluye `mlx-lm`).
 - **Error de Python en `setup.sh`** → ejecuta `uv python install 3.11` y vuelve a intentarlo.
 - **No detecta la voz / entra ruido** → sube/baja la sensibilidad (VAD) en la GUI y prueba el filtro "Claridad de voz" con micrófono.
+
+## Licencia
+
+[MIT](LICENSE) © 2026 Julian Urrego.
+
+Los modelos de IA no forman parte de este repositorio: cada usuario los descarga de Hugging Face con sus propias
+licencias (Whisper: MIT; Qwen2.5 / Qwen3: Apache 2.0; LFM2.5: LFM Open License 1.0). Librerías principales:
+WhisperKit (MIT), mlx-whisper / mlx-lm (MIT), PySide6 (LGPLv3).
