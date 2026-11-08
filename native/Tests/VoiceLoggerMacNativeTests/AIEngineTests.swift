@@ -269,4 +269,66 @@ final class AIEngineTests: XCTestCase {
         let texts = WebSearch.parseStackOverflowAnswers(Data(answers.utf8), query: "useEffect cleanup react")
         XCTAssertTrue(texts[11]?.hasPrefix("Respuesta aceptada:\nReturn a cleanup function from useEffect") ?? false)
     }
+
+    // MARK: Tavily and page selection
+
+    func testParseTavilyKeepsScoreAndTheRelevantPageText() {
+        let json = """
+            {"query": "deploy kubernetes cluster aws", "results": [
+              {"title": "Deploy a Kubernetes cluster on AWS", "url": "https://docs.aws.amazon.com/eks/latest/userguide/create-cluster.html",
+               "content": "Create an Amazon EKS cluster.", "score": 0.91,
+               "raw_content": "Menu\\nSign in\\nTo deploy a Kubernetes cluster on AWS, create an EKS cluster with eksctl and choose the node groups that fit your workload.\\nCookie preferences"},
+              {"title": "No text", "url": "https://example.com/k8s", "content": "Short summary", "score": 0.4, "raw_content": null},
+              {"title": "Bad", "url": "ftp://example.com/file", "content": "x"}
+            ]}
+            """
+        let results = WebSearch.parseTavily(Data(json.utf8), query: "deploy kubernetes cluster aws", limit: 5)
+        XCTAssertEqual(results.count, 2)
+        XCTAssertEqual(results[0].score, 0.91)
+        XCTAssertTrue(results[0].trusted)
+        XCTAssertEqual(results[0].snippet, "Create an Amazon EKS cluster.")
+        XCTAssertEqual(results[0].content, "To deploy a Kubernetes cluster on AWS, create an EKS cluster with eksctl and choose the node groups that fit your workload.")
+        XCTAssertNil(results[1].content)
+        XCTAssertEqual(results[1].score, 0.4)
+    }
+
+    private func page(_ url: String, _ content: String?, trusted: Bool = false) -> WebResult {
+        WebResult(title: url, url: url, snippet: "snippet", trusted: trusted, content: content)
+    }
+
+    func testOneGoodPageIsEnough() {
+        let results = [
+            page("https://a.com", "kubernetes cluster basics"),
+            page("https://b.com", "deploy a kubernetes cluster on aws step by step"),
+            page("https://c.com", nil),
+        ]
+        let chosen = WebSearch.selectPages(results, query: "deploy kubernetes cluster aws")
+        XCTAssertNil(chosen[0].content)
+        XCTAssertNotNil(chosen[1].content)
+        XCTAssertEqual(chosen[2].snippet, "snippet")
+        XCTAssertEqual(chosen.map(\.url), results.map(\.url))  // order and snippets kept
+    }
+
+    func testASecondPageOnlyWhenTheFirstFallsShort() {
+        let results = [
+            page("https://a.com", "deploy kubernetes"),
+            page("https://b.com", "cluster sizing"),
+            page("https://c.com", "aws pricing"),
+        ]
+        let chosen = WebSearch.selectPages(results, query: "deploy kubernetes cluster aws")
+        XCTAssertEqual(chosen.filter { $0.content != nil }.map(\.url), ["https://a.com", "https://b.com"])
+        // Never more than maxPages, and a single page with text is left alone.
+        XCTAssertEqual(WebSearch.selectPages(results, query: "deploy kubernetes cluster aws", maxPages: 1)
+            .filter { $0.content != nil }.count, 1)
+        XCTAssertEqual(WebSearch.selectPages([results[0]], query: "deploy kubernetes cluster aws"), [results[0]])
+    }
+
+    func testReliableSourceWinsATie() {
+        let results = [
+            page("https://blog.example.com", "deploy kubernetes cluster aws"),
+            page("https://docs.aws.amazon.com/eks", "deploy kubernetes cluster aws", trusted: true),
+        ]
+        let chosen = WebSearch.selectPages(results, query: "deploy kubernetes cluster aws")
+        XCTAssertEqual(chosen.filter { $0.content != nil }.map(\.url), ["https://docs.aws.amazon.com/eks"])
+    }
 }

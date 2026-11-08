@@ -246,6 +246,11 @@ final class AppState: ObservableObject {
             }
         }
     }
+    /// Swift engine: a Tavily key is in the Keychain (only this flag is kept in
+    /// the settings; the key itself never leaves the Keychain or reaches the log).
+    @Published var tavilyKeySaved = false
+    /// What is typed in ⚙ before pressing Guardar (cleared right after).
+    @Published var tavilyKeyInput = ""
     @Published var qwenModel = QwenModels.default {
         didSet {
             guard oldValue != qwenModel else { return }
@@ -401,8 +406,40 @@ final class AppState: ObservableObject {
             "preguntas cada": questionsInterval == 0 ? "con el resumen" : "\(questionsInterval) s",
             "respuestas": "\(answerMode == "open" ? "Ideas" : "Reunión"), \(longAnswers ? "largas" : "cortas")",
             "internet": allowWebSearch ? "sí (leer páginas: \(readWebPages ? "sí" : "no"))" : "no",
+            "buscador": aiEngine == "swift" && tavilyKeySaved ? "Tavily (+ DuckDuckGo de respaldo)" : "DuckDuckGo / Wikipedia",
             "idioma IA": summaryLang,
         ]
+    }
+
+    // MARK: Tavily key
+
+    func saveTavilyKey() {
+        let key = tavilyKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        tavilyKeyInput = ""
+        guard !key.isEmpty else { return }
+        guard key.hasPrefix("tvly-"), key.count >= 20 else {
+            toast("Esa no parece una clave de Tavily (empieza por tvly-).", kind: "error")
+            return
+        }
+        guard SecretStore.save(key, account: TavilyKey.account) else {
+            toast("No se pudo guardar la clave en el llavero de macOS.", kind: "error")
+            return
+        }
+        TavilyKey.shared.set(key)
+        tavilyKeySaved = true
+        UserDefaults.standard.set(true, forKey: "tavily_key_saved")
+        SessionLog.shared.log("WEB", "clave de Tavily guardada en el llavero")
+        toast("Clave de Tavily guardada: las búsquedas van por Tavily.")
+    }
+
+    func removeTavilyKey() {
+        SecretStore.delete(TavilyKey.account)
+        TavilyKey.shared.set(nil)
+        tavilyKeySaved = false
+        tavilyKeyInput = ""
+        UserDefaults.standard.set(false, forKey: "tavily_key_saved")
+        SessionLog.shared.log("WEB", "clave de Tavily quitada")
+        toast("Clave de Tavily quitada: se vuelve a DuckDuckGo / Wikipedia.")
     }
 
     func openSessionLog() {
@@ -1764,6 +1801,12 @@ final class AppState: ObservableObject {
         vocabulary = d.string(forKey: "vocabulary") ?? ""
         askTasksOnStop = d.object(forKey: "ask_tasks_on_stop") as? Bool ?? true
         allowWebSearch = d.object(forKey: "allow_web_search") as? Bool ?? true
+        tavilyKeySaved = d.bool(forKey: "tavily_key_saved")
+        if tavilyKeySaved {
+            // Read now, in the background: if macOS asks to allow the Keychain
+            // (new build), it asks at launch and not in the middle of a meeting.
+            Task.detached(priority: .utility) { _ = TavilyKey.shared.current }
+        }
         preferredSites = d.string(forKey: "preferred_sites") ?? ""
         readWebPages = d.object(forKey: "read_web_pages") as? Bool ?? true
         askModelsOnLaunch = d.object(forKey: "ask_models_on_launch") as? Bool ?? true
@@ -3063,8 +3106,22 @@ struct SettingsPopover: View {
                     .help("Se busca en cada uno con site: y van primero en las fuentes. Vacío = búsqueda normal (sin redes sociales, con Wikipedia, gobierno, universidades y prensa seria primero)")
                     .disabled(!state.allowWebSearch)
                 Toggle("Leer las páginas encontradas (más preciso, unos segundos más)", isOn: $state.readWebPages)
-                    .help("Abre las 3 mejores páginas y le pasa a la IA sus párrafos más relacionados con la pregunta, no solo el resumen del buscador")
+                    .help("La IA lee la mejor página; una 2.ª (y una 3.ª) solo si la primera no cubre bien la pregunta. Le pasa sus párrafos más relacionados, no solo el resumen del buscador")
                     .disabled(!state.allowWebSearch)
+                if state.aiEngine == "swift" {
+                    HStack {
+                        SecureField("Clave de Tavily", text: $state.tavilyKeyInput,
+                                    prompt: Text(state.tavilyKeySaved ? "Guardada ✓ (pega otra para cambiarla)" : "tvly-… (opcional, gratis en tavily.com)"))
+                            .onSubmit { state.saveTavilyKey() }
+                        Button("Guardar") { state.saveTavilyKey() }
+                            .disabled(state.tavilyKeyInput.trimmingCharacters(in: .whitespaces).isEmpty)
+                        if state.tavilyKeySaved {
+                            Button("Quitar") { state.removeTavilyKey() }
+                        }
+                    }
+                    .help("Buscador hecho para IA: sin bloqueos anti-robots y con el texto de las páginas ya extraído. 1000 búsquedas gratis al mes. La clave se guarda en el llavero de macOS (nunca en el log). Sin clave: DuckDuckGo / Wikipedia.")
+                    .disabled(!state.allowWebSearch)
+                }
                 Toggle("Preguntar los modelos al abrir la app", isOn: $state.askModelsOnLaunch)
                 Toggle("Resumen y preguntas clave en vivo", isOn: $state.autoSummary)
                 Picker("Preguntas cada", selection: $state.questionsInterval) {

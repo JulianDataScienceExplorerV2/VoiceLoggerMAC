@@ -8,6 +8,8 @@ struct WebResult: Sendable, Equatable {
     var trusted = false
     /// Paragraphs of the page closest to the question, if the page was read.
     var content: String?
+    /// Relevance given by the search API (Tavily: 0-1), if any.
+    var score: Double?
 }
 
 /// Minimal web search (no API keys or extra packages): port of `web_search.py`.
@@ -494,6 +496,88 @@ enum WebSearch {
         }
     }
 
+    // MARK: Tavily (optional, with the user's key)
+
+    /// Search API made for AI apps: no anti-bot pages and the text of each page
+    /// already extracted (one request, 1 credit: 1000 free a month). Used first
+    /// when there is a key in ⚙; DuckDuckGo / Wikipedia stay as fallback.
+    static func parseTavily(_ json: Data, query: String, limit: Int) -> [WebResult] {
+        guard let root = try? JSONSerialization.jsonObject(with: json) as? [String: Any],
+              let items = root["results"] as? [[String: Any]] else { return [] }
+        return items.prefix(limit).compactMap { item in
+            guard let url = item["url"] as? String, url.hasPrefix("http") else { return nil }
+            let title = (item["title"] as? String).map(collapse) ?? hostOf(url)
+            let snippet = collapse(item["content"] as? String ?? "")
+            var content: String?
+            if let raw = item["raw_content"] as? String, !raw.isEmpty {
+                let relevant = extractRelevantPlainText(raw, query: query)
+                content = relevant.isEmpty ? nil : relevant
+            }
+            return WebResult(
+                title: title.isEmpty ? hostOf(url) : title, url: url,
+                snippet: String(snippet.prefix(maxSnippetChars)), trusted: isTrusted(url), content: content,
+                score: (item["score"] as? Double) ?? (item["score"] as? NSNumber)?.doubleValue
+            )
+        }
+    }
+
+    /// `withText`: also bring each page's text (same cost), for "leer páginas".
+    private static func tavily(_ query: String, key: String, limit: Int, withText: Bool) async throws -> [WebResult] {
+        var request = URLRequest(url: URL(string: "https://api.tavily.com/search")!, timeoutInterval: 12)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "query": query, "search_depth": "basic", "max_results": limit,
+            "include_raw_content": withText ? ("text" as Any) : (false as Any),
+        ] as [String: Any])
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        switch status {
+        case 200: return parseTavily(data, query: query, limit: limit)
+        case 401, 403: throw Failure(message: "Tavily rechazó la clave (revísala en ⚙)")
+        case 429, 432, 433: throw Failure(message: "Tavily: se acabaron las búsquedas del plan o hay demasiadas seguidas")
+        default: throw Failure(message: "Tavily HTTP \(status)")
+        }
+    }
+
+    // MARK: Which pages the AI reads
+
+    /// The AI reads as little as it needs: the best page first (most of the
+    /// question's keywords, reliable source, search relevance); a second one
+    /// only if the first does not cover the question well (60 % of its
+    /// keywords), and a third only if the first two together still do not.
+    /// The other pages keep just their snippet. Reading text is what makes the
+    /// model slow to start, so fewer, better pages = faster answer.
+    static func selectPages(_ results: [WebResult], query: String, maxPages: Int = 3) -> [WebResult] {
+        let terms = Set(MeetingMemoryStore.tokenize(query))
+        let withText = results.indices.filter { results[$0].content != nil }
+        guard !terms.isEmpty, withText.count > 1 else { return results }
+        func covered(_ index: Int) -> Set<String> {
+            terms.intersection(MeetingMemoryStore.tokenize(results[index].content ?? ""))
+        }
+        func quality(_ index: Int) -> Double {
+            Double(covered(index).count) / Double(terms.count)
+                + (results[index].trusted ? 0.15 : 0) + (results[index].score ?? 0) * 0.3
+        }
+        let order = withText.sorted { quality($0) != quality($1) ? quality($0) > quality($1) : $0 < $1 }
+        var kept: [Int] = []
+        var coveredTerms = Set<String>()
+        for index in order {
+            if kept.count >= maxPages { break }
+            if !kept.isEmpty, Double(coveredTerms.count) / Double(terms.count) >= 0.6 { break }
+            kept.append(index)
+            coveredTerms.formUnion(covered(index))
+        }
+        var trimmed = results
+        for index in withText where !kept.contains(index) { trimmed[index].content = nil }
+        SessionLog.shared.log(
+            "WEB", "la IA lee \(kept.count) de \(withText.count) páginas (cubren el "
+                + "\(Int(Double(coveredTerms.count) / Double(terms.count) * 100)) % de la pregunta)"
+        )
+        return trimmed
+    }
+
     private static func urlKey(_ url: String) -> String {
         var key = String(url.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first ?? "")
         while key.hasSuffix("/") { key.removeLast() }
@@ -634,9 +718,19 @@ enum WebSearch {
     /// The page paragraphs closest to `query` (up to `maxChars`), in page
     /// order. Without matches, the beginning.
     static func extractRelevantText(_ html: String, query: String, maxChars: Int = pageExcerptChars) -> String {
+        relevantText(from: textBlocks(html), query: query, maxChars: maxChars)
+    }
+
+    /// Same for plain text (Tavily's page text): one block per line.
+    static func extractRelevantPlainText(_ text: String, query: String, maxChars: Int = pageExcerptChars) -> String {
+        let lines = text.split(whereSeparator: \.isNewline).map { collapse(String($0)) }
+        return relevantText(from: lines, query: query, maxChars: maxChars)
+    }
+
+    private static func relevantText(from candidates: [String], query: String, maxChars: Int) -> String {
         var blocks: [String] = []
         var seen = Set<String>()
-        for block in textBlocks(html)
+        for block in candidates
         where block.count >= 60 && block.split(whereSeparator: \.isWhitespace).count >= 8 && !seen.contains(block) {
             seen.insert(block)
             blocks.append(block)
@@ -701,10 +795,34 @@ enum WebSearch {
     /// `topics`: add the topic reference site (MDN, Stack Overflow…).
     static func search(
         _ query: String, language: String = "en", limit: Int = 4, sites: String = "", read: Int = 0,
-        topics: Bool = true
+        topics: Bool = true, tavilyKey: String? = nil
     ) async throws -> [WebResult] {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return [] }
+        if let tavilyKey, !tavilyKey.isEmpty {
+            let started = Date()
+            do {
+                let topicList = topics ? topicSites(for: query) : []
+                let direct = topicList.compactMap(DirectSource.init(rawValue:))
+                async let fromDirect = directSearch(query, sources: direct)
+                let fromTavily = try await tavily(query, key: tavilyKey, limit: max(limit, 5), withText: read > 0)
+                SessionLog.shared.log(
+                    "WEB", "Tavily: \(fromTavily.count) resultados en \(SessionLog.seconds(Date().timeIntervalSince(started)))"
+                )
+                // Preferred and topic sites (MDN, Stack Overflow, Think with Google…) go first.
+                let found = await fromDirect + fromTavily
+                var results = Array(rank(found, sites: parseSites(sites) + topicList).prefix(limit))
+                if results.count >= 2 {
+                    for index in results.indices { results[index].trusted = isTrusted(results[index].url) }
+                    // Tavily already brings the text of its pages: download only what is missing.
+                    let missing = read - results.filter { $0.content != nil }.count
+                    if missing > 0 { results = await readPages(results, query: query, count: missing) }
+                    return selectPages(results, query: query, maxPages: max(read, 1))
+                }
+            } catch {
+                SessionLog.shared.log("WEB", "Tavily no respondió (\(error.localizedDescription)): búsqueda normal")
+            }
+        }
         var siteList = parseSites(sites)
         var direct: [DirectSource] = []
         if topics {
@@ -764,7 +882,7 @@ enum WebSearch {
         results = Array(results.prefix(limit))
         for index in results.indices { results[index].trusted = isTrusted(results[index].url) }
         if read > 0 { results = await readPages(results, query: query, count: read) }
-        return results
+        return selectPages(results, query: query, maxPages: max(read, 1))
     }
 
     private static func run(_ query: String) async -> Result<[WebResult], Error> {

@@ -241,6 +241,20 @@ busca **solo el texto de la pregunta** en DuckDuckGo (o Wikipedia si falla) y Qw
 [1], [2]… con las fuentes como enlaces. La reunión no sale de tu Mac. Se puede quitar en ⚙. Los resultados de un
 modelo pequeño pueden fallar: revisa las fuentes.
 
+### Tavily: buscador para IA (opcional, motor Swift)
+
+DuckDuckGo a veces bloquea a las apps (verificación anti-bots) o no responde desde algunas redes. Con una clave de
+**[Tavily](https://tavily.com)** (gratis: 1000 búsquedas al mes, sin tarjeta) las búsquedas van primero por su API,
+hecha para IA: sin bloqueos y con el texto de cada página ya extraído (no hay que descargarlas).
+
+1. Crea la cuenta en tavily.com y copia tu clave (empieza por `tvly-`).
+2. En la app: ⚙ → IA local (Qwen) → **Clave de Tavily** → pégala y pulsa **Guardar** (solo aparece con el motor Swift).
+3. Se guarda en el **llavero de macOS** (Keychain), no en los ajustes, el repo ni el log. Con una compilación nueva
+   macOS puede pedir permiso al abrir la app para leerla: pulsa **Permitir siempre**.
+
+Solo se envía la pregunta (como con DuckDuckGo). Si Tavily falla (clave mala, sin búsquedas o sin red), se usa la
+búsqueda normal y queda anotado en el log («Tavily no respondió…»). **Quitar** borra la clave del llavero.
+
 ### Calidad de la búsqueda (modo Ideas y Ampliar con internet)
 
 - **Fuentes directas de desarrollo** (motor Swift): las preguntas de frontend se buscan en la **API de búsqueda de
@@ -262,10 +276,14 @@ modelo pequeño pueden fallar: revisa las fuentes.
   desarrollo (MDN, react.dev, Python, Docker, PostgreSQL, OWASP, Stack Overflow…) y fuentes de marketing (Think with
   Google, AMA, Ehrenberg-Bass, Nielsen, Gartner, Forrester…). A Qwen
   le llegan marcadas «fuente confiable» y, si las fuentes no coinciden, se le pide confiar en esas.
-- **Lee las páginas** (⚙, activado): abre las 3 mejores páginas (solo https públicas, máx. 7 s) y le pasa a Qwen sus
-  párrafos más relacionados con la pregunta (hasta 2500 caracteres por página), sin menús, cabeceras, pies ni scripts;
-  no solo el resumen corto del buscador. Qwen recibe hasta 6 resultados y el complemento de Ideas (respuesta larga)
-  arma ideas más elaboradas, ejemplos o pasos (~150-250 palabras).
+- **Lee las páginas** (⚙, activado): abre las 3 mejores páginas (solo https públicas, máx. 7 s; con Tavily ya
+  vienen) y saca sus párrafos más relacionados con la pregunta (hasta 2500 caracteres por página), sin menús,
+  cabeceras, pies ni scripts; no solo el resumen corto del buscador.
+- **La IA lee solo lo que necesita** (motor Swift): primero la mejor página (la que más palabras de la pregunta
+  cubre, fuente confiable y relevancia del buscador). Si esa cubre al menos el 60 % de la pregunta, no lee más; si no,
+  añade una 2.ª y, solo si aún falta, una 3.ª. Las demás quedan con su resumen corto. Leer texto es lo que hace
+  tardar a la IA en empezar, así que menos páginas pero mejores = respuesta más rápida. El log lo dice: «la IA lee
+  1 de 3 páginas (cubren el 80 % de la pregunta)». Qwen recibe hasta 6 resultados.
 - En cada fuente se ve su **dominio**, ✓ si es confiable y 🔍 si la IA leyó la página.
 
 ## Tareas → Recordatorios y exportar

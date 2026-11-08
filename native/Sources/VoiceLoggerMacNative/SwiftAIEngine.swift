@@ -82,7 +82,7 @@ actor SwiftAIEngine: AIEngine {
     static let qaMemoryHits = 3
     static let extendNotesTokens = 600
     static let extendPreviousTokens = 700
-    static let webTokens = 3200
+    static let webTokens = 2200  // the AI reads 1-3 chosen pages, not all of them
     static let webResults = 6
     static let webReadPages = 3
     static let tasksNotesTokens = 1000
@@ -340,7 +340,10 @@ actor SwiftAIEngine: AIEngine {
     private static func loggedSearch(_ question: String, lang: String, sites: String, read: Int) async throws -> [WebResult] {
         let started = Date()
         do {
-            let results = try await WebSearch.search(question, language: lang, limit: Self.webResults, sites: sites, read: read)
+            let results = try await WebSearch.search(
+                question, language: lang, limit: Self.webResults, sites: sites, read: read,
+                tavilyKey: TavilyKey.shared.current
+            )
             SessionLog.shared.log(
                 "WEB", "\(results.count) resultados (\(results.filter(\.trusted).count) confiables, "
                     + "\(results.filter { $0.content != nil }.count) páginas leídas) en "
