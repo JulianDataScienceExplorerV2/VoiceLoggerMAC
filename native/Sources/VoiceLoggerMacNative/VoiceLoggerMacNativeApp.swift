@@ -282,6 +282,11 @@ final class AppState: ObservableObject {
             }
         )
         segmenter = seg
+        // First time ever: macOS's own "allow screen & audio recording" prompt.
+        if !CGPreflightScreenCaptureAccess(), !UserDefaults.standard.bool(forKey: "screen_capture_requested") {
+            UserDefaults.standard.set(true, forKey: "screen_capture_requested")
+            _ = CGRequestScreenCaptureAccess()
+        }
         do {
             try await capture.start()
             isListening = true
@@ -294,10 +299,7 @@ final class AppState: ObservableObject {
         } catch {
             segmenter = nil
             status = "No se pudo iniciar la captura"
-            toast(
-                "No se pudo iniciar la captura. Revisa el permiso de Grabación de pantalla y audio del sistema.",
-                kind: "error"
-            )
+            showPermissionHelp()
         }
     }
 
@@ -314,6 +316,26 @@ final class AppState: ObservableObject {
         stopTimer()
         if askTasksOnStop, !entries.isEmpty {
             extractTasks()
+        }
+    }
+
+    /// Explains why macOS refuses the capture and opens the right settings pane.
+    func showPermissionHelp() {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "macOS no deja grabar el audio del sistema"
+        alert.informativeText = """
+        Activa «VoiceLogger Mac» en Ajustes del Sistema › Privacidad y seguridad › Grabación de pantalla y audio del sistema, y vuelve a abrir la app.
+
+        ¿Ya aparece activada? macOS guarda el permiso para una versión concreta de la app. Tras volver a empaquetarla, quítala de la lista con «−» (o desactívala y actívala), y reabre la app. Para que no vuelva a pasar, firma la app con un certificado (native/README.md).
+
+        Desde macOS 15 el sistema vuelve a pedir confirmación cada mes aunque ya tenga permiso: es normal, elige «Permitir».
+        """
+        alert.addButton(withTitle: "Abrir Ajustes")
+        alert.addButton(withTitle: "Cerrar")
+        if alert.runModal() == .alertFirstButtonReturn,
+           let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+            NSWorkspace.shared.open(url)
         }
     }
 
@@ -1783,6 +1805,7 @@ struct FullView: View {
             Button("Tareas → Recordatorios…", systemImage: "checklist") { state.extractTasks() }
             Button("Abrir carpeta de logs", systemImage: "folder") { state.openLogsFolder() }
             Button("Elegir modelos…", systemImage: "cpu") { state.showModelPicker = true }
+            Button("Ayuda con permisos…", systemImage: "lock.shield") { state.showPermissionHelp() }
             Button("Editar contexto de la IA…", systemImage: "brain") { state.openAIContext() }
             Button("Liberar memoria de la IA", systemImage: "memorychip") { state.unloadAI() }
             Divider()

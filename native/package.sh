@@ -4,7 +4,8 @@
 #   native/package.sh             → native/dist/VoiceLogger Mac.app
 #   native/package.sh --dmg       → además native/dist/VoiceLoggerMac.dmg (para compartir)
 #   native/package.sh --install   → además la copia a /Applications
-#   SIGN_IDENTITY="Developer ID Application: …" native/package.sh   (por defecto: firma ad-hoc)
+#   SIGN_IDENTITY="Apple Development: …" native/package.sh   (si no, usa el primer certificado que
+#                                     encuentre: Developer ID, Apple Development o «VoiceLogger»; si no hay, ad-hoc)
 # La IA (Qwen) sigue usando el .venv de este repo: la ruta del repo queda guardada en la app.
 set -euo pipefail
 
@@ -24,10 +25,25 @@ for arg in "$@"; do
     case "$arg" in
         --dmg) MAKE_DMG=1 ;;
         --install) INSTALL=1 ;;
-        -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
         *) echo "Opción desconocida: $arg (usa --help)" >&2; exit 1 ;;
     esac
 done
+
+# Primer certificado de firma de código disponible, como "HASH<TAB>NOMBRE".
+# Con un certificado, macOS conserva los permisos (grabación, Recordatorios)
+# al volver a empaquetar; con firma ad-hoc los olvida en cada build.
+pick_identity() {
+    local identities line pattern
+    identities="$(security find-identity -p codesigning 2>/dev/null || true)"
+    for pattern in "Developer ID Application" "Apple Development" "VoiceLogger"; do
+        line="$(printf '%s\n' "$identities" | grep -m1 "\"$pattern" || true)"
+        if [ -n "$line" ]; then
+            printf '%s\t%s\n' "$(printf '%s' "$line" | awk '{print $2}')" "$(printf '%s' "$line" | sed -E 's/.*"(.*)".*/\1/')"
+            return
+        fi
+    done
+}
 
 xml_escape() {
     printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
@@ -92,8 +108,24 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
 
-echo "→ Firmando (${SIGN_IDENTITY:-ad-hoc})…"
-codesign --force --deep --sign "${SIGN_IDENTITY:--}" "$APP"
+SIGN_HASH="${SIGN_IDENTITY:-}"
+SIGN_NAME="${SIGN_IDENTITY:-}"
+if [ -z "$SIGN_HASH" ]; then
+    PICKED="$(pick_identity)"
+    if [ -n "$PICKED" ]; then
+        SIGN_HASH="$(printf '%s' "$PICKED" | cut -f1)"
+        SIGN_NAME="$(printf '%s' "$PICKED" | cut -f2)"
+    fi
+fi
+if [ -n "$SIGN_HASH" ] && [ "$SIGN_HASH" != "-" ]; then
+    echo "→ Firmando con el certificado: $SIGN_NAME"
+    codesign --force --deep --identifier "$BUNDLE_ID" --sign "$SIGN_HASH" "$APP"
+    STABLE_SIGNATURE=1
+else
+    echo "→ Firmando ad-hoc (sin certificado)…"
+    codesign --force --deep --identifier "$BUNDLE_ID" --sign - "$APP"
+    STABLE_SIGNATURE=0
+fi
 
 if [ "$MAKE_DMG" = 1 ]; then
     echo "→ Creando DMG…"
@@ -111,6 +143,14 @@ if [ "$INSTALL" = 1 ]; then
     rm -rf "/Applications/$APP_NAME.app"
     ditto "$APP" "/Applications/$APP_NAME.app"
     echo "  Instalada: /Applications/$APP_NAME.app"
+fi
+
+if [ "$STABLE_SIGNATURE" = 0 ]; then
+    # El permiso guardado era para el build anterior y ya no vale, aunque Ajustes lo
+    # siga mostrando activado. Se borra para que macOS lo pida limpio al abrir la app.
+    tccutil reset All "$BUNDLE_ID" >/dev/null 2>&1 || true
+    echo "  Permisos de $APP_NAME reiniciados: con firma ad-hoc macOS los olvida en cada empaquetado."
+    echo "  Para que no vuelva a pasar, crea una vez un certificado «VoiceLogger» (ver native/README.md)."
 fi
 
 echo "✓ Listo: $APP"

@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>VoiceLogger Mac</string>
+    <string>VoiceLogger Mac (Python)</string>
     <key>CFBundleDisplayName</key>
-    <string>VoiceLogger Mac</string>
+    <string>VoiceLogger Mac (Python)</string>
     <key>CFBundleIdentifier</key>
     <string>com.julian.voiceloggermac</string>
     <key>CFBundleVersion</key>

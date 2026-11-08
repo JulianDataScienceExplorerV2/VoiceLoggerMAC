@@ -144,8 +144,23 @@ native/package.sh --dmg       # además native/dist/VoiceLoggerMac.dmg para comp
 ```
 
 - La IA sigue usando el `.venv` del repo: la app guarda dónde está el repo (no lo muevas o vuelve a empaquetar).
-- Firma ad-hoc por defecto: tras re-empaquetar, macOS puede volver a pedir el permiso de grabación de pantalla.
-  Con un certificado: `SIGN_IDENTITY="Developer ID Application: …" native/package.sh`.
+- Firma: usa el primer certificado de firma que encuentre (Developer ID, Apple Development o uno llamado
+  «VoiceLogger»); si no hay ninguno, firma ad-hoc. También se puede forzar: `SIGN_IDENTITY="…" native/package.sh`.
+
+### Permisos de macOS: «me lo vuelve a pedir pero ya lo tiene»
+
+- **Firma ad-hoc (sin certificado):** macOS guarda el permiso para *esa* versión exacta de la app. Al volver a
+  empaquetar es «otra app» para macOS: Ajustes sigue mostrando el interruptor activado (de la versión vieja) pero
+  no vale. `package.sh` lo reinicia solo para que lo pida limpio; si ya lo tenías trabado:
+  `tccutil reset ScreenCapture com.julian.voiceloggermac.native` y vuelve a abrir la app.
+- **Para que no pase más (una sola vez):** *Acceso a Llaveros* → menú *Acceso a Llaveros* → *Asistente para
+  certificados* → *Crear un certificado…* → Nombre **VoiceLogger**, Tipo de identidad *Raíz autofirmada*, Tipo de
+  certificado *Firma de código* → Crear. `package.sh` lo detecta y los permisos sobreviven a los re-empaquetados.
+  (Si tienes cuenta de desarrollador, un certificado *Apple Development* de Xcode también sirve.)
+- **macOS 15 o posterior** vuelve a pedir confirmación **cada mes** a las apps que graban pantalla/audio aunque ya
+  tengan permiso: es del sistema; elige *Permitir*.
+- La app Python se llama **«VoiceLogger Mac (Python)»** en esas listas, para no confundirla con la nativa.
+- En la app: ⋯ → *Ayuda con permisos…* explica esto y abre el panel correcto de Ajustes.
 - La primera vez copia tus ajustes de `swift run`.
 
 ## Pestañas del Resumen IA
