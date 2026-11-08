@@ -2,6 +2,8 @@
 
 # VoiceLoggerMac
 
+> Live transcription of meetings locally with AI for Mac (Apple Silicon).
+
 [English](README.md) | [Español](README.es.md)
 
 Local macOS app that transcribes meetings and content in real time (Zoom, Teams, Meet, DingTalk, YouTube, etc.) without sending audio to the cloud.
@@ -226,3 +228,8 @@ Planned improvements next:
 - **Summary error (`mlx_lm` not installed)** → reinstall dependencies: `uv pip install --python .venv/bin/python -r requirements.txt` (includes `mlx-lm`).
 - **Python error in `setup.sh`** → run `uv python install 3.11` and try again.
 - **Voice not detected / too much noise** → raise/lower the VAD sensitivity in the GUI and try the "Voice clarity" filter with the microphone.
+
+## Screenshots
+
+![Live transcription](assets/screenshots/live.png)
+![Main window](assets/screenshots/main.png)
