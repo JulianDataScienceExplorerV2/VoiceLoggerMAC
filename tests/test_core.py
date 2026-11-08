@@ -437,6 +437,55 @@ class ModelLoadTests(unittest.TestCase):
         self.assertIn("-U mlx-lm", str(ctx.exception))
 
 
+LEAKED = (
+    "Where to grab the fish (mouth vs other parts) - mentioned in the\n\n"
+    "The user wants me to create meeting notes from a transcript. The transcript appears to be from a cooking "
+    "show.\n1. ## Summary (2-3 sentences)\n2. ## Key topics (bullets)\n\nLet me analyze the transcript:\n"
+    "- The speaker is preparing snake head fish noodles\n\nSo the key question is about where to grab the fish (mouth"
+)
+
+
+class ReasoningLeakTests(unittest.TestCase):
+    def test_leaked_reasoning_is_rejected(self):
+        with self.assertRaises(summarizer.ModelOutputError):
+            summarizer.clean_minutes(LEAKED)
+        with self.assertRaises(summarizer.ModelOutputError):
+            summarizer.clean_minutes("The user wants me to summarize.\n## Summary\nI need to think")
+
+    def test_reasoning_then_final_notes_keeps_the_final_notes(self):
+        md = ("Okay, so let me draft.\n## Summary\ndraft\nWait, better:\n"
+              "## Summary\nCooking show about snakehead fish noodles.\n## Key questions\n- Where to grab the fish?")
+        self.assertEqual(summarizer.clean_minutes(md),
+                         "## Summary\nCooking show about snakehead fish noodles.\n## Key questions\n- Where to grab the fish?")
+
+    def test_normal_notes_untouched(self):
+        md = "## Summary\nQ3 review.\n## Decisions\n- Ship it"
+        self.assertEqual(summarizer.clean_minutes(md), md)
+        self.assertEqual(summarizer.clean_minutes("## Resumen\nX"), "## Resumen\nX")
+
+    def test_answers(self):
+        self.assertEqual(summarizer.clean_answer("They grab it by the skull."), "They grab it by the skull.")
+        self.assertEqual(summarizer.clean_answer("The user is asking where.\nLet me check.\nAnswer: By the skull."),
+                         "By the skull.")
+        with self.assertRaises(summarizer.ModelOutputError):
+            summarizer.clean_answer("The user wants to know where to grab the fish. Let me look at the (mouth")
+
+    def test_live_keeps_previous_on_leak(self):
+        with mock.patch.object(summarizer, "_run_live", return_value=LEAKED):
+            with self.assertRaises(summarizer.ModelOutputError):
+                summarizer.live_insights(text="[10:00] x")
+
+    def test_build_summary_reports_leak_as_error(self):
+        with mock.patch.object(summarizer, "_run", return_value=LEAKED):
+            result, error = summarizer.build_summary("[10:00] x", "en")
+        self.assertEqual(result, "")
+        self.assertIn("razonamiento", error)
+
+    def test_system_prompt_forbids_reasoning(self):
+        with mock.patch.object(summarizer, "load_context", return_value=""):
+            self.assertIn("do not show your reasoning", summarizer._system_prompt("en"))
+
+
 class FitTokensTests(unittest.TestCase):
     def test_keeps_short_text(self):
         self.assertEqual(summarizer.fit_tokens("hola equipo", 100), "hola equipo")

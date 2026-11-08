@@ -86,7 +86,8 @@ PROMPTS = {
         "job": (
             "Your job is to help me follow a meeting from its live transcript. "
             "Always answer in English, even if the transcript is in another language. "
-            "Use only what the transcript says; do not invent names, dates or numbers."
+            "Use only what the transcript says; do not invent names, dates or numbers. "
+            "Reply only with the final result: do not show your reasoning or repeat these instructions."
         ),
         "minutes": (
             "Write short meeting notes in Markdown from the transcript below, "
@@ -153,7 +154,8 @@ PROMPTS = {
         "job": (
             "Tu trabajo es ayudarme a seguir una reunión a partir de su transcripción en vivo. "
             "Responde SIEMPRE en español. Usa solo lo que dice la transcripción; "
-            "no inventes nombres, fechas ni cifras."
+            "no inventes nombres, fechas ni cifras. "
+            "Responde solo con el resultado final: no muestres tu razonamiento ni repitas estas instrucciones."
         ),
         "minutes": (
             "A partir de la siguiente transcripción de reunión, genera un acta breve "
@@ -381,6 +383,70 @@ def _strip_thinking(result):
     return result.strip()
 
 
+class ModelOutputError(RuntimeError):
+    """El modelo devolvió su razonamiento (o nada útil) en vez del resultado."""
+
+
+REASONING_MESSAGE = (
+    "El modelo respondió con su razonamiento en vez del resultado (pasa con modelos que «piensan»). "
+    "Vuelve a intentarlo o usa Qwen3 4B 2507."
+)
+_REASONING_OPENERS = (
+    "the user", "okay, so", "okay, let", "ok, so", "alright, so", "let me", "let's see", "i need to",
+    "we need to", "hmm", "wait,", "el usuario", "necesito", "vale, ", "bueno, el usuario", "veamos",
+)
+_SUMMARY_HEADING_RE = re.compile(r"^#{1,3}\s*(summary|resumen)\b", re.IGNORECASE)
+
+
+def looks_like_reasoning(text):
+    """True si el texto parece el razonamiento del modelo y no una respuesta."""
+    head = (text or "").strip().lower()[:240]
+    if head.startswith(_REASONING_OPENERS):
+        return True
+    return any(phrase in head for phrase in (
+        "the user wants", "the user is asking", "the user asked", "user wants me to",
+        "el usuario quiere", "el usuario pregunta", "me pide que",
+    ))
+
+
+def clean_minutes(markdown):
+    """Deja solo el acta: desde el último encabezado de resumen (o el primero de
+    sección) en adelante. Si no hay acta, sino razonamiento, lanza ModelOutputError."""
+    lines = (markdown or "").strip().splitlines()
+    summary_starts = [i for i, line in enumerate(lines) if _SUMMARY_HEADING_RE.match(line.strip())]
+    if summary_starts:
+        start = summary_starts[-1]  # la versión final suele ir después del borrador
+    else:
+        start = next((i for i, line in enumerate(lines) if line.lstrip().startswith("#")), None)
+    if start is None:
+        raise ModelOutputError(REASONING_MESSAGE)
+    cleaned = "\n".join(lines[start:]).strip()
+    body = "\n".join(lines[start + 1:]).strip()  # lo que va bajo el primer encabezado
+    if looks_like_reasoning(cleaned) or looks_like_reasoning(body):
+        raise ModelOutputError(REASONING_MESSAGE)
+    return cleaned
+
+
+_FINAL_ANSWER_RE = re.compile(r"^\**\s*(final answer|answer|respuesta final|respuesta)\s*:\**\s*", re.IGNORECASE)
+
+
+def clean_answer(text):
+    """Respuesta sin razonamiento. Si el modelo pensó en voz alta pero dejó una
+    línea «Answer:/Respuesta:», se usa lo que va después; si no, ModelOutputError."""
+    text = (text or "").strip()
+    if not looks_like_reasoning(text):
+        return text
+    lines = text.splitlines()
+    marks = [i for i, line in enumerate(lines) if _FINAL_ANSWER_RE.match(line.strip())]
+    if marks:
+        i = marks[-1]
+        tail = [_FINAL_ANSWER_RE.sub("", lines[i].strip())] + lines[i + 1:]
+        answer = "\n".join(tail).strip()
+        if answer and not looks_like_reasoning(answer):
+            return answer
+    raise ModelOutputError(REASONING_MESSAGE)
+
+
 def _strip_code_fence(result):
     result = result.strip()
     if result.startswith("```"):
@@ -462,7 +528,7 @@ def build_summary(text, language="es"):
         return "", "no hay texto para resumir"
 
     try:
-        result = _executor.submit(_run, text, language).result()
+        result = clean_minutes(_executor.submit(_run, text, language).result())
         _last_error = None
         return result, None
     except Exception as exc:
@@ -574,7 +640,7 @@ def live_insights(text="", new_text="", previous="", language="en"):
             raise ValueError("no transcript to summarize yet")
         markdown = previous.strip()
     else:
-        markdown = (_executor.submit(_run_live, text, new_text, previous, language).result() or "").strip()
+        markdown = clean_minutes(_executor.submit(_run_live, text, new_text, previous, language).result())
     rest, questions = split_key_questions(markdown)
     summary, action_items = split_action_items(rest)
     return {"markdown": markdown, "summary": summary, "questions": questions, "action_items": action_items}
@@ -619,9 +685,9 @@ def ask_question(text, question, language="es", notes="", memory="", detail="lon
     cargó el modelo).
     """
     text = _tail_text((text or "").strip(), QA_MAX_CHARS, language)
-    return _executor.submit(
+    return clean_answer(_executor.submit(
         _run_question, text, question, language, notes or "", memory or "", detail or "long"
-    ).result()
+    ).result())
 
 
 def recall(memory_dir, session, question, recent_text):
@@ -687,9 +753,9 @@ def extend_with_web(question, previous="", notes="", language="en", detail="long
         empty = "No encontré resultados en internet para esa pregunta." if language == "es" else \
             "I couldn't find web results for that question."
         return {"answer": empty, "sources": []}
-    answer = _executor.submit(
+    answer = clean_answer(_executor.submit(
         _run_extend, question, previous or "", notes or "", results, language, detail or "long"
-    ).result()
+    ).result())
     return {"answer": answer, "sources": [{"title": r["title"], "url": r["url"]} for r in results]}
 
 
