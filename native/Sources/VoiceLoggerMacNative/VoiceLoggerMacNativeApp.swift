@@ -2347,7 +2347,8 @@ struct FullView: View {
                                 )
                                 .foregroundStyle(.secondary)
                             }
-                            ForEach(state.qaItems) { item in
+                            // Newest first: the latest question and answer are always on top.
+                            ForEach(Array(state.qaItems.reversed())) { item in
                                 QARow(
                                     item: item,
                                     fontSize: state.transcriptFontSize + (expanded ? Self.readingExtraFont : 0),
@@ -2362,10 +2363,10 @@ struct FullView: View {
                         .padding(expanded ? 20 : 14)
                     }
                     .onChange(of: state.qaRevision) { _, _ in
-                        guard let last = state.qaItems.last else { return }
+                        // The newest question is on top: show it from its start.
+                        guard let newest = state.qaItems.last else { return }
                         withAnimation(.easeOut(duration: 0.25)) {
-                            // Enlarged: show where the newest answer starts, to read it from the top.
-                            proxy.scrollTo(last.id, anchor: expanded ? .top : .bottom)
+                            proxy.scrollTo(newest.id, anchor: .top)
                         }
                     }
                     .task {
