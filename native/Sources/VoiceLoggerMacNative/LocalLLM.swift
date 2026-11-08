@@ -198,31 +198,6 @@ actor LocalLLM {
         )
     }
 
-    /// A session whose cache already holds `system`, prefilled once with a
-    /// one-token reply; nil if that fails (the caller then starts from scratch).
-    private func prefixSession(
-        system: String, container: ModelContainer, speculative: SpeculativeDecodingConfig?
-    ) async -> ChatSession? {
-        let key = "\(speculative != nil)\u{1F}\(system)"
-        if let index = prefixes.firstIndex(where: { $0.key == key }) {
-            let entry = prefixes.remove(at: index)
-            prefixes.append(entry)  // most recently used last
-            return entry.session
-        }
-        let base = newSession(
-            container, system: system, speculative: speculative,
-            parameters: makeParameters(maxTokens: 1, temperature: 0, penalizeRepeats: false)
-        )
-        do {
-            _ = try await base.respond(to: "OK")
-        } catch {
-            return nil
-        }
-        prefixes.append((key, base))
-        if prefixes.count > Self.maxCachedPrefixes { prefixes.removeFirst() }
-        return base
-    }
-
     /// One answer: `system` + `user` → text without reasoning or code fences.
     /// `partial` receives the text so far while it is written (~10 times a second).
     func generate(
@@ -241,13 +216,7 @@ actor LocalLLM {
                 let params = makeParameters(maxTokens: maxTokens, temperature: temperature, penalizeRepeats: penalizeRepeats)
                 // One request = system prompt + one user message, as in Python.
                 // The system prompt comes from the prefilled cache when there is one.
-                let session: ChatSession
-                if let base = await prefixSession(system: system, container: container, speculative: speculative) {
-                    session = await base.fork(history: [])
-                    session.generateParameters = params
-                } else {
-                    session = newSession(container, system: system, speculative: speculative, parameters: params)
-                }
+                let session = newSession(container, system: system, speculative: speculative, parameters: params)
                 return try await stream(session, user: user, partial: partial)
             } catch is CancellationError {
                 throw CancellationError()
