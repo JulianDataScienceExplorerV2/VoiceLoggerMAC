@@ -423,6 +423,20 @@ class ExtendWithWebTests(unittest.TestCase):
         fake.assert_called_once_with("q", "p", "n", "en", "short")
 
 
+class ModelLoadTests(unittest.TestCase):
+    def test_old_mlx_lm_gives_update_hint(self):
+        fake_mlx = types.ModuleType("mlx_lm")
+
+        def load(name):
+            raise ValueError("Model type lfm2 not supported.")
+
+        fake_mlx.load = load
+        with mock.patch.dict(sys.modules, {"mlx_lm": fake_mlx}), mock.patch.object(summarizer, "_model", None):
+            with self.assertRaises(RuntimeError) as ctx:
+                summarizer._ensure_model()
+        self.assertIn("-U mlx-lm", str(ctx.exception))
+
+
 class FitTokensTests(unittest.TestCase):
     def test_keeps_short_text(self):
         self.assertEqual(summarizer.fit_tokens("hola equipo", 100), "hola equipo")

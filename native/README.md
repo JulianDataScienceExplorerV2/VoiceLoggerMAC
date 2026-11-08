@@ -60,15 +60,20 @@ botones y ajustes; *Letra de lectura* (A- / A+) agranda transcripción, resumen 
 - Whisper también se precarga al abrir la app; los archivos de ambos modelos ya quedan en la
   caché de disco tras la primera descarga.
 - Respuestas en **inglés** por defecto (⚙ → *Idioma de las respuestas*).
-- **Modelo de IA** en ⚙ (se descarga la primera vez y se reinicia el proceso Qwen):
+- **Elige los modelos al abrir**: la app pregunta qué modelo de transcripción y de IA usar (vienen marcados los
+  recomendados; *Aceptar* y listo). Casilla para no volver a preguntar; se reabre en ⋯ → *Elegir modelos…*.
 
-  | Opción | Repo | Descarga aprox. | Para qué |
+  | IA | Repo | Descarga aprox. | Para qué |
   |---|---|---|---|
-  | Qwen2.5 1.5B (por defecto) | `mlx-community/Qwen2.5-1.5B-Instruct-4bit` | ~0.9 GB | ligero, rápido |
-  | Qwen3 4B 2507 | `mlx-community/Qwen3-4B-Instruct-2507-4bit` | ~2.3 GB | mejor calidad, va bien con 16 GB |
+  | **Qwen3 4B 2507** (recomendado) | `mlx-community/Qwen3-4B-Instruct-2507-4bit` | ~2.3 GB | mejor calidad, va bien con 16 GB |
+  | Qwen2.5 1.5B | `mlx-community/Qwen2.5-1.5B-Instruct-4bit` | ~0.9 GB | el más rápido |
+  | LFM2.5 2.6B (experimental) | `LiquidAI/LFM2.5-2.6B-MLX-4bit` | ~1.5 GB | rápido, bueno extrayendo datos; licencia LFM 1.0; necesita `mlx-lm` reciente |
+
+  Transcripción recomendada: **Large v3 Turbo** (máxima calidad); el *626MB* queda como opción más liviana.
 
   Solo modelos de respuesta directa (sin razonamiento previo) para que todo vaya rápido. Si usas uno que "piensa"
   vía `VOICELOGGER_QWEN_MODEL`, la app le apaga el razonamiento y limpia cualquier `<think>`.
+  Si un modelo nuevo dice *not supported*: `uv pip install --python .venv/bin/python -U mlx-lm`.
   Desde la terminal también vale `VOICELOGGER_QWEN_MODEL=<repo>`.
 
 ### Reuniones largas sin reventar la RAM

@@ -26,15 +26,15 @@ final class AsyncSemaphore: @unchecked Sendable {
 }
 
 public final class WhisperKitTranscriber: Transcriber, @unchecked Sendable {
-    /// Recommended multilingual model per Argmax docs.
-    /// Equivalent of the Python app's `whisper-large-v3-turbo-q4` default.
-    public static let defaultModel = "large-v3-v20240930_626MB"
+    /// Recommended: the full large-v3 turbo (best quality); the 626MB
+    /// compressed variant stays as the lighter option.
+    public static let defaultModel = "large-v3-v20240930_turbo"
 
     /// Same idea as Python's `MODEL_CHOICES` in `transcriber.py`:
     /// first option is the recommended turbo model.
     public static let modelChoices: [(label: String, id: String)] = [
-        ("Large v3 Turbo 626MB (recomendado) — ~60s", "large-v3-v20240930_626MB"),
-        ("Large v3 Turbo (máxima velocidad/calidad) — ~90s", "large-v3-v20240930_turbo"),
+        ("Large v3 Turbo — máxima calidad (recomendado) — ~90s", "large-v3-v20240930_turbo"),
+        ("Large v3 Turbo 626MB — casi igual, más liviano — ~60s", "large-v3-v20240930_626MB"),
         ("Small (ligero) — ~20s", "small"),
         ("Small English — ~20s", "small.en"),
         ("Base (ultra ligero) — ~10s", "base"),

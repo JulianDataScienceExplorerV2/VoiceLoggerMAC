@@ -245,7 +245,16 @@ def _ensure_model():
         if _model is None:
             from mlx_lm import load
 
-            _model, _tokenizer = load(SUMMARY_MODEL)
+            try:
+                _model, _tokenizer = load(SUMMARY_MODEL)
+            except ValueError as exc:
+                # p. ej. "Model type lfm2 not supported": modelos nuevos (LFM2.5)
+                # necesitan un mlx-lm reciente.
+                if "not supported" in str(exc).lower():
+                    raise RuntimeError(
+                        f"{exc} Actualiza mlx-lm: uv pip install --python .venv/bin/python -U mlx-lm"
+                    ) from exc
+                raise
             _mx_call("set_cache_limit", MLX_CACHE_LIMIT_MB * 1024 * 1024)
 
 

@@ -25,10 +25,11 @@ struct QAItem: Identifiable, Equatable {
 /// answer directly: "thinking" models (e.g. Qwen3.5) reason before answering,
 /// which makes live summaries and answers slower.
 enum QwenModels {
-    static let `default` = "mlx-community/Qwen2.5-1.5B-Instruct-4bit"
+    static let `default` = "mlx-community/Qwen3-4B-Instruct-2507-4bit"
     static let choices: [(label: String, id: String)] = [
-        ("Qwen2.5 1.5B · ligero, ~0.9 GB (actual)", "mlx-community/Qwen2.5-1.5B-Instruct-4bit"),
-        ("Qwen3 4B 2507 · mejor calidad, ~2.3 GB (bien con 16 GB)", "mlx-community/Qwen3-4B-Instruct-2507-4bit"),
+        ("Qwen3 4B 2507 — mejor calidad (recomendado) · ~2.3 GB", "mlx-community/Qwen3-4B-Instruct-2507-4bit"),
+        ("Qwen2.5 1.5B — el más rápido · ~0.9 GB", "mlx-community/Qwen2.5-1.5B-Instruct-4bit"),
+        ("LFM2.5 2.6B (Liquid AI) — rápido, experimental · ~1.5 GB", "LiquidAI/LFM2.5-2.6B-MLX-4bit"),
     ]
 }
 
@@ -132,6 +133,12 @@ final class AppState: ObservableObject {
             save()
         }
     }
+    /// Show "Elige los modelos" when the app opens.
+    @Published var askModelsOnLaunch = true { didSet { save() } }
+    /// The user confirmed models at least once (until then the dialog
+    /// preselects the recommended ones).
+    @Published var modelsChosen = false { didSet { save() } }
+    @Published var showModelPicker = false
     /// When the meeting stops, extract its tasks and offer to add them to Reminders.
     @Published var askTasksOnStop = true { didSet { save() } }
     @Published var meetingTasks: [MeetingTask] = []
@@ -315,6 +322,26 @@ final class AppState: ObservableObject {
         isPaused.toggle()
         status = isPaused ? "Pausado" : "Escuchando..."
         if isPaused { metrics.level = 0 }
+    }
+
+    /// Called when the main window appears: ask for the models first, or load
+    /// the saved ones right away.
+    func launch() {
+        if askModelsOnLaunch {
+            showModelPicker = true
+        } else {
+            prewarm()
+        }
+    }
+
+    /// Applies the choice made in "Elige los modelos" and starts loading Whisper.
+    func applyModelChoice(whisper: String, ai: String, askAgain: Bool) {
+        modelName = whisper
+        qwenModel = ai
+        askModelsOnLaunch = askAgain
+        modelsChosen = true
+        showModelPicker = false
+        prewarm()
     }
 
     /// Loads Whisper into memory as soon as the app opens, so "Iniciar" is
@@ -1121,6 +1148,8 @@ final class AppState: ObservableObject {
         d.set(liveSpeed, forKey: "live_speed")
         d.set(askTasksOnStop, forKey: "ask_tasks_on_stop")
         d.set(allowWebSearch, forKey: "allow_web_search")
+        d.set(askModelsOnLaunch, forKey: "ask_models_on_launch")
+        d.set(modelsChosen, forKey: "models_chosen")
         d.set(showKeyQuestions, forKey: "show_key_questions")
         d.set(uiScale, forKey: "ui_scale")
         d.set(transcriptFontSize, forKey: "font_size")
@@ -1138,7 +1167,7 @@ final class AppState: ObservableObject {
         let keys = [
             "model", "language", "sensitivity", "alerts", "alert_sound", "autoscroll", "ai_lang", "auto_summary",
             "font_size", "always_on_top", "dim_when_idle", "live_interval", "qwen_model", "ui_scale",
-            "long_answers", "live_speed", "show_key_questions", "ask_tasks_on_stop", "allow_web_search", "python_root",
+            "long_answers", "live_speed", "show_key_questions", "ask_tasks_on_stop", "allow_web_search", "ask_models_on_launch", "models_chosen", "python_root",
         ]
         for key in keys {
             if let value = old.object(forKey: key) { d.set(value, forKey: key) }
@@ -1166,6 +1195,8 @@ final class AppState: ObservableObject {
         liveSpeed = d.string(forKey: "live_speed") ?? "normal"
         askTasksOnStop = d.object(forKey: "ask_tasks_on_stop") as? Bool ?? true
         allowWebSearch = d.object(forKey: "allow_web_search") as? Bool ?? true
+        askModelsOnLaunch = d.object(forKey: "ask_models_on_launch") as? Bool ?? true
+        modelsChosen = d.object(forKey: "models_chosen") as? Bool ?? false
         showKeyQuestions = d.object(forKey: "show_key_questions") as? Bool ?? true
         uiScale = d.object(forKey: "ui_scale") as? Double ?? 1.15
         transcriptFontSize = max(12, min(28, d.object(forKey: "font_size") as? Int ?? 17))
@@ -1751,6 +1782,7 @@ struct FullView: View {
             Button("Exportar reunión (Markdown)…", systemImage: "square.and.arrow.up") { state.exportMarkdown() }
             Button("Tareas → Recordatorios…", systemImage: "checklist") { state.extractTasks() }
             Button("Abrir carpeta de logs", systemImage: "folder") { state.openLogsFolder() }
+            Button("Elegir modelos…", systemImage: "cpu") { state.showModelPicker = true }
             Button("Editar contexto de la IA…", systemImage: "brain") { state.openAIContext() }
             Button("Liberar memoria de la IA", systemImage: "memorychip") { state.unloadAI() }
             Divider()
@@ -2201,6 +2233,7 @@ struct SettingsPopover: View {
                 Toggle("Mostrar preguntas detectadas en el audio", isOn: $state.showKeyQuestions)
                 Toggle("Al detener, proponer las tareas para Recordatorios", isOn: $state.askTasksOnStop)
                 Toggle("Botón «Ampliar con internet» (solo envía la pregunta)", isOn: $state.allowWebSearch)
+                Toggle("Preguntar los modelos al abrir la app", isOn: $state.askModelsOnLaunch)
                 Toggle("Resumen y preguntas clave en vivo", isOn: $state.autoSummary)
                 Picker("Actualizar cada", selection: $state.liveInterval) {
                     Text("15 s").tag(15)
@@ -2234,6 +2267,87 @@ struct SettingsPopover: View {
 }
 
 // MARK: - Compact, overlay, menu bar
+
+/// "Elige los modelos": shown when the app opens (and from ⋯ → Elegir modelos).
+struct ModelPickerSheet: View {
+    @ObservedObject var state: AppState
+    @Environment(\.uiScale) private var uiScale
+    @State private var whisper: String
+    @State private var ai: String
+    @State private var dontAsk: Bool
+
+    init(state: AppState) {
+        self._state = ObservedObject(wrappedValue: state)
+        // First time: the recommended models. Afterwards: the last choice.
+        let first = !state.modelsChosen
+        _whisper = State(initialValue: first ? WhisperKitTranscriber.defaultModel : state.modelName)
+        _ai = State(initialValue: first ? QwenModels.default : state.qwenModel)
+        _dontAsk = State(initialValue: !state.askModelsOnLaunch)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 14) {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .frame(width: 56 * uiScale, height: 56 * uiScale)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Elige los modelos")
+                        .scaledFont(19, weight: .bold)
+                    Text("Todo corre en tu Mac. Cada modelo se descarga solo la primera vez.")
+                        .scaledFont(12)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            GroupBox {
+                Picker("Transcripción", selection: $whisper) {
+                    ForEach(WhisperKitTranscriber.modelChoices, id: \.id) { choice in
+                        Text(choice.label).tag(choice.id)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+                .labelsHidden()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(6)
+            } label: {
+                Label("Transcripción (Whisper)", systemImage: "waveform")
+                    .scaledFont(13, weight: .semibold)
+                    .foregroundStyle(Theme.brand)
+            }
+            GroupBox {
+                Picker("IA", selection: $ai) {
+                    ForEach(QwenModels.choices, id: \.id) { choice in
+                        Text(choice.label).tag(choice.id)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+                .labelsHidden()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(6)
+            } label: {
+                Label("IA para resumen, preguntas y tareas", systemImage: "sparkles")
+                    .scaledFont(13, weight: .semibold)
+                    .foregroundStyle(Theme.ai)
+            }
+            HStack {
+                Toggle("No volver a preguntar al abrir (se cambian en ⋯ → Elegir modelos)", isOn: $dontAsk)
+                    .toggleStyle(.checkbox)
+                    .scaledFont(12)
+                Spacer()
+                Button("Aceptar") {
+                    state.applyModelChoice(whisper: whisper, ai: ai, askAgain: !dontAsk)
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.brand)
+            }
+        }
+        .padding(22)
+        .frame(width: 560 * uiScale)
+        .interactiveDismissDisabled()
+        .preferredColorScheme(.dark)
+    }
+}
 
 /// "N tasks detected — add them to Reminders?" shown when the meeting stops.
 struct TasksSheet: View {
@@ -2421,13 +2535,17 @@ struct ContentView: View {
                 FullView(state: state)
             }
         }
+        .sheet(isPresented: $state.showModelPicker) {
+            ModelPickerSheet(state: state)
+                .environment(\.uiScale, CGFloat(state.uiScale))
+        }
         .environment(\.uiScale, CGFloat(state.uiScale))
         .font(.system(size: (13 * state.uiScale).rounded()))
         .controlSize(state.uiScale >= 1.15 ? .large : .regular)
         .background(WindowReader { window in windowBox.window = window })
         .onAppear {
             state.applyOnTop()
-            state.prewarm()
+            state.launch()
         }
         .onHover { hovering in windowBox.setDimmed(state.dimWhenIdle && !hovering) }
         .onChange(of: state.dimWhenIdle) { _, enabled in
