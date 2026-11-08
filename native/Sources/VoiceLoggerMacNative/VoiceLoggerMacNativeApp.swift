@@ -120,6 +120,9 @@ final class AppState: ObservableObject {
     private var sessionStart: Date?
     private var lastAlertAt: TimeInterval = 0
     private var lastEntryAt: Date?
+    /// Phrases waiting for (or in) Whisper. The live transcript comes first:
+    /// Qwen updates only start when this is 0.
+    private var pendingTranscriptions = 0
     private var lastSummaryAt: Date?
     /// Full notes from the last live update (fed back for incremental updates).
     private var liveMarkdown = ""
@@ -313,6 +316,8 @@ final class AppState: ObservableObject {
     }
 
     private func handlePhrase(_ audio: [Float], timestamp ts: String) async {
+        pendingTranscriptions += 1
+        defer { pendingTranscriptions -= 1 }
         do {
             let transcriber = try await ensureTranscriber()
             status = "Transcribiendo..."
@@ -461,6 +466,9 @@ final class AppState: ObservableObject {
     /// so Qwen is busy at most a fraction of the time.
     private func maybeAutoSummarize() {
         guard autoSummary, !isSummarizing, hasUnsummarizedText else { return }
+        // Don't start Qwen while Whisper has phrases to transcribe: both share
+        // the chip and the live transcript on the left must not lag.
+        guard pendingTranscriptions == 0 else { return }
         // A question waiting for its answer goes first: Qwen handles one
         // request at a time and the user is looking at the screen.
         guard !qaItems.contains(where: { $0.answer == nil }) else { return }

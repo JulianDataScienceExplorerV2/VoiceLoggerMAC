@@ -146,6 +146,9 @@ actor QwenServer {
         process.executableURL = bridge.python
         process.arguments = [bridge.script.path, "serve"]
         process.currentDirectoryURL = bridge.root
+        // Background priority: the live transcription (Whisper, in the app)
+        // must win when both want the chip at the same time.
+        process.qualityOfService = .utility
         var environment = ProcessInfo.processInfo.environment
         environment["PYTHONIOENCODING"] = "utf-8"
         environment["PYTHONUNBUFFERED"] = "1"

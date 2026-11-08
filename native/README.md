@@ -6,7 +6,7 @@ Versión nativa para macOS en SwiftUI, conviviendo con la app Python/PySide6 de 
 
 - [x] Swift Package + app SwiftUI que compila: `swift build` (requiere macOS 15+, Apple Silicon)
 - [x] Captura de audio del sistema con ScreenCaptureKit en proceso (`SystemAudioCapture.swift`, port del helper `swift/SystemAudioCapture.swift`)
-- [x] Segmentador VAD por energía portado de Python (`AudioSegmenter.swift`, con tests)
+- [x] Segmentador VAD por energía portado de Python (`AudioSegmenter.swift`, con tests). Re-corta el audio en bloques exactos de 30 ms (como Python): corta una frase tras 0,65 s de silencio o a los 8 s de habla seguida, sin importar el tamaño de los buffers de ScreenCaptureKit
 - [x] Logger TXT/JSONL compatible con Python (`TranscriptLogger.swift`)
 - [x] **Transcripción real con WhisperKit** (CoreML en Apple Neural Engine, modelo `large-v3-v20240930_626MB` de Argmax OSS, vía SPM `argmax-oss-swift` ≥ 1.1.0)
 - [x] Selector de modelo en la UI, como en Python (`large-v3-turbo` recomendado → Small/Base/Tiny); se descarga solo la primera vez y queda persistido

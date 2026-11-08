@@ -28,4 +28,35 @@ final class SegmenterTests: XCTestCase {
         let out = PhraseSegmenter.prepare([Float](repeating: 0.9, count: 16000))
         XCTAssertLessThanOrEqual(out.map(abs).max() ?? 0, 0.95)
     }
+
+    /// ScreenCaptureKit buffers have no fixed size: the timings must not depend
+    /// on it. 20 s of non-stop speech in 4096-sample buffers must be cut at the
+    /// 8 s max phrase (3 phrases), not come out as one late phrase.
+    func testBigBuffersKeepRealTiming() {
+        var phrases: [[Float]] = []
+        let seg = PhraseSegmenter(onPhrase: { audio, _ in phrases.append(audio) })
+        let speech = (0..<(16000 * 20)).map { Float(sin(Double($0) * 0.3)) * 0.2 }
+        var index = 0
+        while index < speech.count {
+            let end = min(index + 4096, speech.count)
+            seg.consume(Array(speech[index..<end]))
+            index = end
+        }
+        seg.flush()
+        XCTAssertEqual(phrases.count, 3)
+        XCTAssertLessThanOrEqual(phrases.map(\.count).max() ?? 0, 16000 * 8)
+    }
+
+    /// Tiny buffers (smaller than 30 ms) must still detect silence after speech.
+    func testTinyBuffersStillCutOnSilence() {
+        var phrases = 0
+        let seg = PhraseSegmenter(onPhrase: { _, _ in phrases += 1 })
+        let speech = (0..<(16000 * 2)).map { Float(sin(Double($0) * 0.3)) * 0.2 }
+        for start in stride(from: 0, to: speech.count, by: 100) {
+            seg.consume(Array(speech[start..<min(start + 100, speech.count)]))
+        }
+        for _ in 0..<(16000 / 100) { seg.consume([Float](repeating: 0, count: 100)) }
+        XCTAssertEqual(phrases, 1)  // cut by 1 s of silence, before flush
+    }
 }
+

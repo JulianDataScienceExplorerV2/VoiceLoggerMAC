@@ -3,8 +3,10 @@ import Foundation
 /// Energy-based voice activity segmenter ported from the Python
 /// `PhraseSegmenter` in `audio_capture.py`.
 ///
-/// Samples arrive as 16 kHz mono Float32 chunks. Completed phrases are
-/// delivered through `onPhrase` as a single Float32 buffer plus timestamp.
+/// Samples arrive as 16 kHz mono Float32 buffers of any size and are re-cut
+/// into exact 30 ms chunks (like the Python app does) before the VAD runs.
+/// Completed phrases are delivered through `onPhrase` as a single Float32
+/// buffer plus timestamp.
 public final class PhraseSegmenter: @unchecked Sendable {
     public var energyThreshold: Float
     let silenceTimeoutSec: Double
@@ -21,12 +23,17 @@ public final class PhraseSegmenter: @unchecked Sendable {
     private var voiced = 0
     private var silence = 0
     private var timestamp: String?
+    /// Samples waiting to complete the next 30 ms chunk.
+    private var pending: [Float] = []
+
+    /// Samples per analysis chunk (480 = 30 ms at 16 kHz).
+    private var chunkSize: Int { max(1, Int((16000 * chunkSec).rounded())) }
 
     public init(
         energyThreshold: Float = 0.0035,
         silenceTimeoutSec: Double = 0.65,
         minSpeechSec: Double = 0.5,
-        maxSpeechSec: Double = 10.0,
+        maxSpeechSec: Double = 8.0,
         chunkSec: Double = 0.03,
         onPhrase: @escaping ([Float], String) -> Void = { _, _ in },
         onLevel: @escaping (Float) -> Void = { _ in }
@@ -52,12 +59,33 @@ public final class PhraseSegmenter: @unchecked Sendable {
         voiced = 0
         silence = 0
         timestamp = nil
+        pending = []
     }
 
-    public func consume(_ chunk: [Float]) {
-        guard !chunk.isEmpty else { return }
+    /// Feeds audio of any buffer size.
+    ///
+    /// ScreenCaptureKit buffers have no fixed length, but every VAD timing
+    /// (0.65 s of silence to cut, 8 s max phrase) counts 30 ms chunks. Feeding
+    /// raw buffers stretched all of them in proportion to the buffer size, so
+    /// phrases were cut much later than intended and the live transcript lagged.
+    public func consume(_ samples: [Float]) {
+        guard !samples.isEmpty else { return }
+        pending.append(contentsOf: samples)
+        let size = chunkSize
+        var offset = 0
+        var peak: Float = -1
+        while pending.count - offset >= size {
+            peak = max(peak, process(Array(pending[offset..<offset + size])))
+            offset += size
+        }
+        if offset > 0 { pending.removeFirst(offset) }
+        // One level update per buffer, not per chunk: fewer UI hops.
+        if peak >= 0 { onLevel(min(1.0, peak * 40.0)) }
+    }
+
+    /// Runs the VAD on one exact 30 ms chunk; returns its RMS level.
+    private func process(_ chunk: [Float]) -> Float {
         let rms = Self.rms(chunk)
-        onLevel(min(1.0, rms * 40.0))
         let above = rms >= energyThreshold
 
         if !speaking {
@@ -76,7 +104,7 @@ public final class PhraseSegmenter: @unchecked Sendable {
             } else {
                 streak = 0
             }
-            return
+            return rms
         }
 
         current.append(contentsOf: chunk)
@@ -90,9 +118,8 @@ public final class PhraseSegmenter: @unchecked Sendable {
         let maxSilenceChunks = max(3, Int(silenceTimeoutSec / chunkSec))
         let maxPhraseChunks = max(10, Int(maxSpeechSec / chunkSec))
         let minVoicedChunks = max(2, Int(minSpeechSec / chunkSec))
-        let chunkSamples = chunk.count
 
-        if silence >= maxSilenceChunks || current.count / max(chunkSamples, 1) >= maxPhraseChunks {
+        if silence >= maxSilenceChunks || current.count / chunk.count >= maxPhraseChunks {
             if voiced >= minVoicedChunks, let ts = timestamp {
                 onPhrase(Self.prepare(current), ts)
             }
@@ -103,10 +130,12 @@ public final class PhraseSegmenter: @unchecked Sendable {
             preRoll = []
             timestamp = nil
         }
+        return rms
     }
 
     public func flush() {
         let minVoicedChunks = max(2, Int(minSpeechSec / chunkSec))
+        if speaking { current.append(contentsOf: pending) }
         if speaking, !current.isEmpty, voiced >= minVoicedChunks, let ts = timestamp {
             onPhrase(Self.prepare(current), ts)
         }
