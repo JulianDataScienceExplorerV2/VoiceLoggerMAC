@@ -32,17 +32,17 @@ enum AIText {
         try! NSRegularExpression(pattern: pattern, options: options)
     }
 
-    nonisolated(unsafe) private static let thinkBlock = regex("<think>.*?</think>", [.dotMatchesLineSeparators])
-    nonisolated(unsafe) private static let summaryHeading = regex("^#{1,3}\\s*(summary|resumen)\\b", [.caseInsensitive])
-    nonisolated(unsafe) private static let finalAnswer = regex(
+    private static let thinkBlock = regex("<think>.*?</think>", [.dotMatchesLineSeparators])
+    private static let summaryHeading = regex("^#{1,3}\\s*(summary|resumen)\\b", [.caseInsensitive])
+    private static let finalAnswer = regex(
         "^\\**\\s*(final answer|answer|respuesta final|respuesta)\\s*:\\**\\s*", [.caseInsensitive]
     )
-    nonisolated(unsafe) private static let numbered = regex("^\\d+[.)]\\s+")
-    nonisolated(unsafe) private static let listPrefix = regex("^(?:[-*•]|\\d+[.)])\\s*(?:\\[[ xX]\\]\\s*)?")
-    nonisolated(unsafe) private static let bullet = regex("^(?:[-*•+]|\\d+[.)])\\s*")
-    nonisolated(unsafe) private static let word = regex("\\w+")
-    nonisolated(unsafe) private static let nothingNewPattern = regex("^\\W*(nothing new|nada nuevo)\\b", [.caseInsensitive])
-    nonisolated(unsafe) private static let isoDate = regex("^\\d{4}-\\d{2}-\\d{2}$")
+    private static let numbered = regex("^\\d+[.)]\\s+")
+    private static let listPrefix = regex("^(?:[-*•]|\\d+[.)])\\s*(?:\\[[ xX]\\]\\s*)?")
+    private static let bullet = regex("^(?:[-*•+]|\\d+[.)])\\s*")
+    private static let word = regex("\\w+")
+    private static let nothingNewPattern = regex("^\\W*(nothing new|nada nuevo)\\b", [.caseInsensitive])
+    private static let isoDate = regex("^\\d{4}-\\d{2}-\\d{2}$")
 
     private static func matches(_ regex: NSRegularExpression, _ text: String) -> Bool {
         regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil

@@ -38,6 +38,10 @@ struct QAItem: Identifiable, Equatable {
     var brainstorm = false
     /// A question said word for word in the meeting (shown in orange).
     var literal = false
+    /// Seconds until the (first) answer arrived, and the engine that gave it,
+    /// to compare the Python and Swift engines.
+    var elapsed: Double?
+    var engine = ""
     /// Ideas mode, second step: what the web adds to the quick answer
     /// ("Puede complementar tu pregunta"). nil = not asked; "" = nothing new.
     var complement: String?
@@ -1165,6 +1169,8 @@ final class AppState: ObservableObject {
         // waiting for the web); the search runs meanwhile and its complement
         // comes right after, under the answer.
         let twoStep = mode == "open" && web
+        let started = Date()
+        let engineName = aiEngine == "swift" ? "Swift" : "Python"
         Task {
             let answer: String
             let sources: [WebSource]
@@ -1188,6 +1194,8 @@ final class AppState: ObservableObject {
                 self.qaItems[index].sources = sources
                 self.qaItems[index].failed = failed
                 self.qaItems[index].complementLoading = twoStep && !failed
+                self.qaItems[index].elapsed = Date().timeIntervalSince(started)
+                self.qaItems[index].engine = engineName
                 self.qaRevision += 1
             }
             guard twoStep, !failed else { return }
@@ -2103,6 +2111,12 @@ struct QARow: View {
                                         }
                                     }
                                 }
+                            }
+                            if let elapsed = item.elapsed {
+                                Text("\(item.engine) · \(elapsed.formatted(.number.precision(.fractionLength(1)))) s")
+                                    .scaledFont(10)
+                                    .foregroundStyle(.secondary)
+                                    .help("Motor de IA y segundos hasta la respuesta (sin contar el complemento de internet)")
                             }
                             if allowWeb && !item.fromWeb && !item.brainstorm {
                                 Button {

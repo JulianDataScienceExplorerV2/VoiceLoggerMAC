@@ -59,7 +59,7 @@ if ! xcodebuild -version >/dev/null 2>&1; then
 fi
 echo "→ Compilando en modo release con xcodebuild (la primera vez tarda: compila MLX)…"
 DERIVED="$NATIVE_DIR/.build/xcode"
-xcodebuild -scheme "$EXECUTABLE" -destination 'platform=macOS' -configuration Release \
+xcodebuild -scheme "$EXECUTABLE" -destination "platform=macOS,arch=$(uname -m)" -configuration Release \
     -derivedDataPath "$DERIVED" -skipMacroValidation -skipPackagePluginValidation -quiet build
 BIN_DIR="$DERIVED/Build/Products/Release"
 

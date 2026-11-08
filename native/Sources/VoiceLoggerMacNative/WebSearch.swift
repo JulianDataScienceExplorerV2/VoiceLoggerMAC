@@ -157,12 +157,12 @@ enum WebSearch {
         try! NSRegularExpression(pattern: pattern, options: options)
     }
 
-    nonisolated(unsafe) private static let tagPattern = regex("<[^>]+>")
-    nonisolated(unsafe) private static let anchorPattern = regex("<a\\b([^>]*)>([\\s\\S]*?)</a\\s*>", [.caseInsensitive])
-    nonisolated(unsafe) private static let snippetPattern = regex(
+    private static let tagPattern = regex("<[^>]+>")
+    private static let anchorPattern = regex("<a\\b([^>]*)>([\\s\\S]*?)</a\\s*>", [.caseInsensitive])
+    private static let snippetPattern = regex(
         "<(a|div|td|span)\\b([^>]*\\bresult__snippet\\b[^>]*)>([\\s\\S]*?)</\\1\\s*>", [.caseInsensitive]
     )
-    nonisolated(unsafe) private static let markupPattern = regex(
+    private static let markupPattern = regex(
         "<!--[\\s\\S]*?-->|<(/?)([a-zA-Z][a-zA-Z0-9]*)\\b[^>]*?(/?)>", []
     )
 
