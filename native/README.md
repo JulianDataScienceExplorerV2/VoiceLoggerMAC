@@ -17,6 +17,8 @@ Versión nativa para macOS en SwiftUI, conviviendo con la app Python/PySide6 de 
 - [x] **Resumen en vivo** incremental + **preguntas clave detectadas en el audio**, con Qwen cargado una sola vez en un proceso persistente
 - [x] Contexto/persona para Qwen en `qwen_context.txt` (se relee en cada petición)
 - [x] Respuestas **largas y detalladas** por defecto, o cortas (selector *Corta / Larga* en el panel Preguntas)
+- [x] Velocidad del texto en vivo en ⚙: Rápida (pausa 0,4 s, frases ≤ 5 s) / Normal (0,65 s, ≤ 8 s) / Precisa (1 s, ≤ 12 s); el texto aparece tras esa pausa + ~1 s de Whisper
+- [x] Preguntas detectadas: botón **×** para ocultarlas y **?** en la cabecera para volver a verlas
 - [x] Ícono propio (`assets/AppIcon.svg`; dibujado en SwiftUI para el Dock y `.icns` para `VoiceLoggerMac.app`)
 - [ ] Micrófono como fuente (hoy solo audio del sistema)
 - [ ] Contexto/vocabulario para WhisperKit (`promptTokens`)

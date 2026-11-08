@@ -28,6 +28,27 @@ enum QwenModels {
     ]
 }
 
+/// How soon the live transcript shows up. A phrase is sent to Whisper after a
+/// pause of `silence` seconds, or after `maxSpeech` seconds of non-stop
+/// speech; then Whisper takes about a second. Shorter = faster text, but
+/// Whisper gets less context per phrase.
+struct LiveSpeed: Identifiable {
+    let id: String
+    let label: String
+    let silence: Double
+    let maxSpeech: Double
+
+    static let all = [
+        LiveSpeed(id: "fast", label: "Rápida · pausa 0,4 s · frases ≤ 5 s", silence: 0.4, maxSpeech: 5),
+        LiveSpeed(id: "normal", label: "Normal · pausa 0,65 s · frases ≤ 8 s", silence: 0.65, maxSpeech: 8),
+        LiveSpeed(id: "precise", label: "Precisa · pausa 1 s · frases ≤ 12 s", silence: 1.0, maxSpeech: 12),
+    ]
+
+    static func named(_ id: String) -> LiveSpeed {
+        all.first { $0.id == id } ?? all[1]
+    }
+}
+
 /// Values that change many times per second (audio level, session clock).
 /// Kept apart from `AppState` so they only re-render the meter, not the
 /// whole window with the transcript list.
@@ -93,6 +114,16 @@ final class AppState: ObservableObject {
     /// Language of AI answers (summary, key questions, Q&A). English for now.
     @Published var summaryLang = "en" { didSet { save() } }
     @Published var autoSummary = true { didSet { save() } }
+    /// Live transcript speed (see `LiveSpeed`).
+    @Published var liveSpeed = "normal" {
+        didSet {
+            let speed = LiveSpeed.named(liveSpeed)
+            segmenter?.setTiming(silence: speed.silence, maxSpeech: speed.maxSpeech)
+            save()
+        }
+    }
+    /// Show the "detected in the audio" questions (the X hides them).
+    @Published var showKeyQuestions = true { didSet { save() } }
     /// Detailed answers (default) or short ones, for the Questions panel.
     @Published var longAnswers = true { didSet { save() } }
     /// Seconds between live summary updates (counted from the end of the previous one).
@@ -211,8 +242,11 @@ final class AppState: ObservableObject {
             toast(status, kind: "error")
             return
         }
+        let speed = LiveSpeed.named(liveSpeed)
         let seg = PhraseSegmenter(
             energyThreshold: Float(sensitivity) / 10000.0,
+            silenceTimeoutSec: speed.silence,
+            maxSpeechSec: speed.maxSpeech,
             onPhrase: { [weak self] audio, ts in
                 Task { @MainActor in
                     await self?.handlePhrase(audio, timestamp: ts)
@@ -875,6 +909,8 @@ final class AppState: ObservableObject {
         d.set(liveInterval, forKey: "live_interval")
         d.set(qwenModel, forKey: "qwen_model")
         d.set(longAnswers, forKey: "long_answers")
+        d.set(liveSpeed, forKey: "live_speed")
+        d.set(showKeyQuestions, forKey: "show_key_questions")
         d.set(uiScale, forKey: "ui_scale")
         d.set(transcriptFontSize, forKey: "font_size")
         d.set(alwaysOnTop, forKey: "always_on_top")
@@ -896,6 +932,8 @@ final class AppState: ObservableObject {
         liveInterval = d.object(forKey: "live_interval") as? Int ?? 30
         qwenModel = d.string(forKey: "qwen_model") ?? QwenModels.default
         longAnswers = d.object(forKey: "long_answers") as? Bool ?? true
+        liveSpeed = d.string(forKey: "live_speed") ?? "normal"
+        showKeyQuestions = d.object(forKey: "show_key_questions") as? Bool ?? true
         uiScale = d.object(forKey: "ui_scale") as? Double ?? 1.15
         transcriptFontSize = max(12, min(28, d.object(forKey: "font_size") as? Int ?? 17))
         alwaysOnTop = d.object(forKey: "always_on_top") as? Bool ?? true
@@ -1620,6 +1658,17 @@ struct FullView: View {
                 .labelsHidden()
                 .fixedSize()
                 .help("Larga: explica contexto, decisiones y próximos pasos. Corta: 2-4 frases.")
+                if !state.showKeyQuestions && !state.keyQuestions.isEmpty {
+                    Button {
+                        state.showKeyQuestions = true
+                    } label: {
+                        Label("\(state.keyQuestions.count)", systemImage: "questionmark.circle")
+                    }
+                    .buttonStyle(.plain)
+                    .scaledFont(11, weight: .semibold)
+                    .foregroundStyle(Theme.qa)
+                    .help("Mostrar las preguntas detectadas en el audio")
+                }
                 if !state.qaItems.isEmpty {
                     Button("Borrar") {
                         state.qaItems.removeAll()
@@ -1631,7 +1680,7 @@ struct FullView: View {
             }
         } content: {
             VStack(spacing: 0) {
-                if !state.keyQuestions.isEmpty {
+                if state.showKeyQuestions && !state.keyQuestions.isEmpty {
                     keyQuestionsList
                     Divider().opacity(0.5)
                 }
@@ -1687,9 +1736,22 @@ struct FullView: View {
     /// asks Qwen to answer it from the transcript.
     private var keyQuestionsList: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("DETECTADAS EN EL AUDIO")
-                .scaledFont(10, weight: .bold)
-                .foregroundStyle(.secondary)
+            HStack {
+                Text("DETECTADAS EN EL AUDIO")
+                    .scaledFont(10, weight: .bold)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    state.showKeyQuestions = false
+                } label: {
+                    Image(systemName: "xmark")
+                        .scaledFont(11, weight: .semibold)
+                        .foregroundStyle(.secondary)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Ocultar (vuelven con el botón ? de la cabecera)")
+            }
             ForEach(Array(state.keyQuestions.prefix(5).enumerated()), id: \.offset) { item in
                 let answering = state.isAnswering(item.element)
                 let plain = String(MarkdownText.inline(item.element).characters)
@@ -1770,6 +1832,11 @@ struct SettingsPopover: View {
                     Text("Portugués").tag("pt")
                     Text("Auto-detectar").tag("auto")
                 }
+                Picker("Velocidad del texto en vivo", selection: $state.liveSpeed) {
+                    ForEach(LiveSpeed.all) { speed in
+                        Text(speed.label).tag(speed.id)
+                    }
+                }
                 LabeledContent("Sensibilidad de voz") {
                     HStack {
                         Slider(value: $state.sensitivityValue, in: 10...150)
@@ -1790,6 +1857,7 @@ struct SettingsPopover: View {
                     Text("Español").tag("es")
                 }
                 Toggle("Respuestas largas y detalladas", isOn: $state.longAnswers)
+                Toggle("Mostrar preguntas detectadas en el audio", isOn: $state.showKeyQuestions)
                 Toggle("Resumen y preguntas clave en vivo", isOn: $state.autoSummary)
                 Picker("Actualizar cada", selection: $state.liveInterval) {
                     Text("15 s").tag(15)

@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/AppIcon.png" width="128" alt="VoiceLogger Mac icon"></p>
+
 # VoiceLoggerMac
 
 [English](README.md) | [Español](README.es.md)
@@ -5,6 +7,36 @@
 Local macOS app that transcribes meetings and content in real time (Zoom, Teams, Meet, DingTalk, YouTube, etc.) without sending audio to the cloud.
 
 It uses **MLX Whisper** on Apple Silicon, system-audio capture via **ScreenCaptureKit** (Swift helper) or microphone, voice-activity segmentation (VAD), a floating caption overlay, keyword alerts, exportable history, and a **local AI summary** with Qwen.
+
+
+## Native app (SwiftUI) — new
+
+`native/` holds a native macOS version built for reading during the meeting:
+
+- **Reading-first layout**: one-line toolbar; transcript on the left; **AI summary** and **Questions** stacked on the right (all resizable).
+- **Live AI summary** every 15 s – 2 min, updated incrementally with Qwen loaded once in memory.
+- **Key questions detected in the audio**: click one to get an answer, copy it, or hide the list with **×**.
+- **Ask anything** about the meeting, with **long, detailed answers** (default) or short ones.
+- **Long meetings without filling your RAM**: on-disk meeting memory + fixed token budgets per prompt; Qwen unloads itself when idle.
+- **`qwen_context.txt`**: persona/context for the AI (“You are an expert in …”).
+- **Live text speed** (Fast / Normal / Precise), interface size, reading font, floating captions, compact mode, always on top, keyword alerts, Whisper and Qwen model pickers, keyboard shortcuts.
+- 100 % local: audio, transcript and AI never leave your Mac.
+
+Requirements: macOS 15+, Apple Silicon, Xcode 16 (Swift 6). The AI side reuses this repo's Python environment:
+
+```bash
+./setup.sh
+cd native && swift run
+```
+
+Details, shortcuts and model options: [native/README.md](native/README.md).
+
+<!-- Screenshots of the real app: capture the window (no shadow) and uncomment below.
+     mkdir -p docs/screenshots && screencapture -o -w docs/screenshots/main.png
+<p align="center"><img src="docs/screenshots/main.png" width="900" alt="VoiceLogger Mac: transcript, live AI summary and questions"></p>
+-->
+
+The sections below describe the original Python/PySide6 app (still supported).
 
 ## Requirements
 
@@ -176,9 +208,10 @@ Similar tools exist — e.g. **MacWhisper** and **Superwhisper** (commercial, lo
 Planned improvements next:
 
 - Speaker labels (system = them, mic = you) and optional diarization
+- Final minutes saved automatically when a meeting ends; action items to Apple Reminders
+- Search across past meetings; live translated captions
 - Export to SRT/VTT subtitles and import/transcribe audio files
-- Chunked summaries for long meetings (today the summarizer truncates at 6,000 chars)
-- Auto-detect meeting start, full-text search across all sessions, automated tests/CI
+- Signed `.app` / DMG for the native app; Apple Foundation Models as an alternative to Qwen
 
 ## Troubleshooting
 

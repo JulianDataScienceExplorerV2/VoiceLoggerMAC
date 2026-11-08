@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/AppIcon.png" width="128" alt="Ícono de VoiceLogger Mac"></p>
+
 # VoiceLoggerMac
 
 [English](README.md) | [Español](README.es.md)
@@ -5,6 +7,36 @@
 App local para macOS que transcribe reuniones y contenido en tiempo real (Zoom, Teams, Meet, DingTalk, YouTube, etc.) sin enviar audio a la nube.
 
 Usa **MLX Whisper** en Apple Silicon, captura de audio del sistema con **ScreenCaptureKit** (helper en Swift) o micrófono, segmentación por voz (VAD), subtítulos flotantes, alertas por palabras clave, historial exportable y **resumen IA local** con Qwen.
+
+
+## App nativa (SwiftUI) — nueva
+
+En `native/` está la versión nativa para macOS, pensada para leer durante la reunión:
+
+- **Diseño para leer**: barra superior de una sola línea; transcripción a la izquierda; **Resumen IA** y **Preguntas** apilados a la derecha (todo redimensionable).
+- **Resumen IA en vivo** cada 15 s – 2 min, actualizado de forma incremental, con Qwen cargado una sola vez en memoria.
+- **Preguntas clave detectadas en el audio**: tócalas para que la IA las responda, cópialas u oculta la lista con la **×**.
+- **Pregunta lo que quieras** sobre la reunión, con **respuestas largas y detalladas** (por defecto) o cortas.
+- **Reuniones largas sin llenar la RAM**: memoria de la reunión en disco + presupuesto fijo de tokens por prompt; Qwen se descarga solo tras un rato sin uso.
+- **`qwen_context.txt`**: persona/contexto para la IA («You are an expert in …»).
+- **Velocidad del texto en vivo** (Rápida / Normal / Precisa), tamaño de interfaz, letra de lectura, subtítulos flotantes, modo compacto, siempre encima, alertas, selector de modelos Whisper y Qwen, atajos de teclado.
+- 100 % local: audio, transcripción e IA nunca salen de tu Mac.
+
+Requisitos: macOS 15+, Apple Silicon, Xcode 16 (Swift 6). La parte de IA usa el entorno Python de este repo:
+
+```bash
+./setup.sh
+cd native && swift run
+```
+
+Detalles, atajos y modelos: [native/README.md](native/README.md).
+
+<!-- Pantallazos de la app real: captura la ventana (sin sombra) y descomenta abajo.
+     mkdir -p docs/screenshots && screencapture -o -w docs/screenshots/main.png
+<p align="center"><img src="docs/screenshots/main.png" width="900" alt="VoiceLogger Mac: transcripción, resumen IA en vivo y preguntas"></p>
+-->
+
+Las secciones siguientes describen la app original en Python/PySide6 (sigue disponible).
 
 ## Requisitos
 
@@ -176,9 +208,10 @@ Ya existen herramientas similares — por ejemplo **MacWhisper** y **Superwhispe
 Mejoras planificadas:
 
 - Etiquetas de hablante (sistema = ellos, micrófono = tú) y diarización opcional
+- Acta final guardada sola al terminar la reunión; tareas a Recordatorios de Apple
+- Búsqueda en reuniones pasadas; subtítulos traducidos en vivo
 - Exportar a subtítulos SRT/VTT e importar/transcribir archivos de audio
-- Resúmenes por bloques para reuniones largas (hoy el resumidor trunca a 6.000 caracteres)
-- Detección automática de inicio de reunión, búsqueda de texto completo en todas las sesiones, tests automatizados/CI
+- `.app` firmada / DMG para la app nativa; Foundation Models de Apple como alternativa a Qwen
 
 ## Problemas frecuentes
 

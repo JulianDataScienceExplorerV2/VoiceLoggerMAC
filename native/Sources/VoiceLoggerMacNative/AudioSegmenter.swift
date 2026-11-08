@@ -9,9 +9,9 @@ import Foundation
 /// buffer plus timestamp.
 public final class PhraseSegmenter: @unchecked Sendable {
     public var energyThreshold: Float
-    let silenceTimeoutSec: Double
+    public private(set) var silenceTimeoutSec: Double
     let minSpeechSec: Double
-    let maxSpeechSec: Double
+    public private(set) var maxSpeechSec: Double
     let chunkSec: Double
     let onPhrase: ([Float], String) -> Void
     let onLevel: (Float) -> Void
@@ -45,6 +45,13 @@ public final class PhraseSegmenter: @unchecked Sendable {
         self.chunkSec = chunkSec
         self.onPhrase = onPhrase
         self.onLevel = onLevel
+    }
+
+    /// Changes how soon phrases are cut (pause length / max phrase length),
+    /// even while listening.
+    public func setTiming(silence: Double, maxSpeech: Double) {
+        silenceTimeoutSec = max(0.2, min(2.0, silence))
+        maxSpeechSec = max(2.0, min(20.0, maxSpeech))
     }
 
     public func setEnergyThreshold(_ threshold: Float) {

@@ -58,5 +58,19 @@ final class SegmenterTests: XCTestCase {
         for _ in 0..<(16000 / 100) { seg.consume([Float](repeating: 0, count: 100)) }
         XCTAssertEqual(phrases, 1)  // cut by 1 s of silence, before flush
     }
+
+    /// "Rápida" mode: 5 s max phrase → 12 s of non-stop speech in 3 phrases.
+    func testFastTimingCutsSooner() {
+        var phrases: [[Float]] = []
+        let seg = PhraseSegmenter(onPhrase: { audio, _ in phrases.append(audio) })
+        seg.setTiming(silence: 0.4, maxSpeech: 5)
+        let speech = (0..<(16000 * 12)).map { Float(sin(Double($0) * 0.3)) * 0.2 }
+        for start in stride(from: 0, to: speech.count, by: 1024) {
+            seg.consume(Array(speech[start..<min(start + 1024, speech.count)]))
+        }
+        seg.flush()
+        XCTAssertEqual(phrases.count, 3)
+        XCTAssertLessThanOrEqual(phrases.map(\.count).max() ?? 0, 16000 * 5)
+    }
 }
 
