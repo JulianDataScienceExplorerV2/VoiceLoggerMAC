@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from audio_capture import CHUNK_SAMPLES, SAMPLE_RATE, PhraseSegmenter, prepare_phrase  # noqa: E402
 import summarizer  # noqa: E402
+from meeting_memory import MeetingMemory, tokenize  # noqa: E402
 from summarizer import _tail_text, split_text  # noqa: E402
 from transcriber import extract_text, is_bad_transcript  # noqa: E402
 
@@ -242,7 +243,102 @@ class AskWithNotesTests(unittest.TestCase):
     def test_serve_forwards_notes(self):
         with mock.patch.object(summarizer, "ask_question", return_value="42") as fake:
             summarizer.handle_request({"type": "ask", "text": "t", "question": "q", "lang": "en", "notes": "n"})
-        fake.assert_called_once_with("t", "q", "en", "n")
+        fake.assert_called_once_with("t", "q", "en", "n", "")
+
+
+class FitTokensTests(unittest.TestCase):
+    def test_keeps_short_text(self):
+        self.assertEqual(summarizer.fit_tokens("hola equipo", 100), "hola equipo")
+
+    def test_tail_keeps_recent_whole_lines(self):
+        text = "\n".join(f"[10:{i:02d}] linea numero {i}" for i in range(200))
+        out = summarizer.fit_tokens(text, 100, keep="tail")
+        self.assertLessEqual(summarizer._count_tokens(out), 100)
+        self.assertTrue(out.endswith("linea numero 199"))
+        self.assertTrue(out.startswith("[10:"))
+
+    def test_head_keeps_beginning(self):
+        text = "## Summary\nFirst\n" + "\n".join(f"- item {i}" for i in range(300))
+        out = summarizer.fit_tokens(text, 50, keep="head")
+        self.assertTrue(out.startswith("## Summary\nFirst"))
+        self.assertLessEqual(summarizer._count_tokens(out), 50)
+
+
+class MeetingMemoryTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.memory = MeetingMemory(self.tmp.name, "2026-11-08_10-00-00")
+        self.memory.add(0, "10:00:00", "10:04:00", "[10:00:00] Welcome everyone, agenda is the Q3 roadmap.")
+        self.memory.add(1, "10:04:00", "10:08:00", "[10:04:00] The marketing budget for Q3 is 40 thousand dollars.")
+        self.memory.add(2, "10:08:00", "10:12:00", "[10:08:00] Julian owns the permissions fix, deadline Friday.")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_add_is_idempotent_and_persisted(self):
+        self.assertFalse(self.memory.add(1, "x", "y", "duplicate"))
+        reopened = MeetingMemory(self.tmp.name, "2026-11-08_10-00-00")
+        self.assertEqual([s["index"] for s in reopened.segments()], [0, 1, 2])
+
+    def test_search_finds_relevant_segment(self):
+        hits = self.memory.search("What was the budget for marketing?", k=1)
+        self.assertEqual([h["index"] for h in hits], [1])
+
+    def test_search_ignores_accents_and_excludes(self):
+        self.memory.add(3, "10:12", "10:16", "[10:12] La decisión final fue lanzar el viernes.")
+        self.assertEqual([h["index"] for h in self.memory.search("decision lanzar")], [3])
+        self.assertEqual(self.memory.search("decision lanzar", exclude=lambda s: s["index"] == 3), [])
+
+    def test_stopword_only_query_returns_nothing(self):
+        self.assertEqual(self.memory.search("what is the"), [])
+        self.assertNotIn("the", tokenize("the budget"))
+
+    def test_rejects_unsafe_session_names(self):
+        for bad in ["../etc", "a/b", "", "x" * 80]:
+            with self.assertRaises(ValueError):
+                MeetingMemory(self.tmp.name, bad)
+
+    def test_corrupt_line_is_skipped(self):
+        with open(self.memory.path, "a", encoding="utf-8") as f:
+            f.write("{roto\n")
+        self.assertEqual(len(self.memory.segments()), 3)
+
+
+class MemoryRequestsTests(unittest.TestCase):
+    def test_remember_then_ask_uses_disk_memory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = {"memory_dir": tmp, "session": "s1"}
+            reply = summarizer.handle_request(dict(base, type="remember", index="0", start="10:00",
+                                                   end="10:04", text="[10:00] Budget for Q3 is 40k."))
+            self.assertEqual(reply, {"stored": True, "segments": 1})
+            with mock.patch.object(summarizer, "ask_question", return_value="40k") as fake:
+                reply = summarizer.handle_request(dict(base, type="ask", text="[11:00] other topic",
+                                                       question="What is the Q3 budget?", lang="en"))
+            self.assertEqual(reply, {"answer": "40k", "used_memory": True})
+            memory = fake.call_args[0][4]
+            self.assertIn("Budget for Q3 is 40k.", memory)
+            self.assertIn("[10:00 – 10:04]", memory)
+
+    def test_segment_already_in_recent_text_is_not_repeated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            summarizer.handle_request({"type": "remember", "memory_dir": tmp, "session": "s1",
+                                       "index": "0", "start": "a", "end": "b", "text": "[10:00] Budget is 40k."})
+            self.assertEqual(summarizer.recall(tmp, "s1", "budget", "[10:00] Budget is 40k.\n[10:01] ok"), "")
+
+    def test_memory_and_notes_go_into_prompt(self):
+        with mock.patch.object(summarizer, "_generate", return_value="ok") as fake, \
+                mock.patch.object(summarizer, "load_context", return_value=""):
+            summarizer._ask_blocking("[11:00] now", "Budget?", "en", notes="## Summary\nX", memory="[10:00 – 10:04]\nold")
+        prompt = fake.call_args[0][1]
+        self.assertLess(prompt.index("Notes of the meeting so far:"), prompt.index("Earlier parts of the meeting"))
+        self.assertLess(prompt.index("Earlier parts of the meeting"), prompt.index("Most recent part of the transcript:"))
+
+    def test_unload_request(self):
+        with mock.patch.object(summarizer, "_model", None):
+            self.assertEqual(summarizer.handle_request({"type": "unload"}), {"unloaded": False})
+        with mock.patch.object(summarizer, "_model", object()), mock.patch.object(summarizer, "_tokenizer", object()):
+            self.assertEqual(summarizer.handle_request({"type": "unload"}), {"unloaded": True})
+            self.assertIsNone(summarizer._model)
 
 
 class ServeTests(unittest.TestCase):
@@ -262,7 +358,7 @@ class ServeTests(unittest.TestCase):
             )
         self.assertEqual(replies, [
             {"id": "a", "ok": True, "result": live},
-            {"id": "b", "ok": True, "result": {"answer": "42"}},
+            {"id": "b", "ok": True, "result": {"answer": "42", "used_memory": False}},
         ])
 
     def test_errors_do_not_stop_the_server(self):

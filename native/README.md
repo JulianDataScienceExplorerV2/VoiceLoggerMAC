@@ -67,6 +67,24 @@ botones y ajustes; *Letra de lectura* (A- / A+) agranda transcripción, resumen 
   Los modelos que "piensan" (Qwen3/3.5) se usan con el razonamiento apagado y se limpia cualquier `<think>`.
   Desde la terminal también vale `VOICELOGGER_QWEN_MODEL=<repo>`.
 
+### Reuniones largas sin reventar la RAM
+
+Lo que gasta RAM no es el texto (2 h de reunión ≈ 100 KB), sino el modelo cargado y el
+prompt mientras genera. Por eso:
+
+- **Presupuesto fijo de tokens por prompt**: resumen en vivo = notas (≤1000) + texto nuevo
+  (≤2500); pregunta = notas (≤800) + memoria (≤1500) + lo reciente (≤1500). El prompt no
+  crece con la duración de la reunión.
+- **Memoria en disco**: cada ~3000 caracteres (3-4 min de charla) se cierra un fragmento y se
+  guarda en `~/Library/Application Support/VoiceLoggerMac/memory/<sesión>.jsonl`. Al
+  preguntar, se traen del disco solo los 3 fragmentos más relevantes (búsqueda BM25 por
+  palabras clave, sin modelos extra) — sirve para «¿qué presupuesto dijeron al principio?».
+  *Limpiar* empieza una sesión nueva; los archivos viejos quedan en disco.
+- **MLX contenido**: el prompt se procesa en pasos de 512 tokens (menos pico de memoria), la
+  caché de MLX se limita a 512 MB y se vacía tras cada respuesta.
+- **Qwen se descarga solo tras 10 min sin uso** y se recarga al volver a necesitarlo
+  (`VOICELOGGER_QWEN_IDLE_UNLOAD=0` lo desactiva). También a mano: ⋯ → *Liberar memoria de la IA*.
+
 ### Contexto / persona: `qwen_context.txt`
 
 En la raíz del repo (⋯ → *Editar contexto de la IA…* lo abre). Va antes de cada resumen y

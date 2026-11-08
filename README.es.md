@@ -124,6 +124,7 @@ Los logs se guardan localmente en `logs/transcripcion_AAAA-MM-DD.txt` y `.jsonl`
 ├── audio_capture.py      # Captura sistema/micrófono + segmentación VAD
 ├── transcriber.py        # Transcripción con MLX Whisper
 ├── summarizer.py         # Resumen IA local con Qwen (mlx-lm)
+├── meeting_memory.py     # Memoria en disco de la reunión para la IA (búsqueda BM25)
 ├── logger.py             # Guardado TXT/JSONL en logs/
 ├── history_dialog.py     # Historial y exportación MD/PDF
 ├── benchmark.py          # Benchmark de modelos Whisper

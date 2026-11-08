@@ -88,13 +88,30 @@ actor QwenServer {
         return try JSONDecoder().decode(Envelope<LiveInsights>.self, from: data).result
     }
 
-    /// `notes` (the live summary) covers what no longer fits in `text`.
-    func ask(question: String, text: String, notes: String, lang: String) async throws -> String {
+    /// `notes` (the live summary) and the meeting memory on disk (`session`
+    /// in `memoryDir`) cover what no longer fits in `text`.
+    func ask(question: String, text: String, notes: String, session: String, memoryDir: String, lang: String) async throws -> String {
         let data = try await send([
-            "type": "ask", "question": question, "text": text, "notes": notes, "lang": lang,
+            "type": "ask", "question": question, "text": text, "notes": notes,
+            "session": session, "memory_dir": memoryDir, "lang": lang,
         ])
         return try JSONDecoder().decode(Envelope<Answer>.self, from: data).result.answer
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Stores a closed transcript fragment in the meeting memory on disk
+    /// (idempotent by `index`). No model involved: it is instant.
+    func remember(session: String, memoryDir: String, index: Int, start: String, end: String, text: String) async throws {
+        _ = try await send([
+            "type": "remember", "session": session, "memory_dir": memoryDir,
+            "index": String(index), "start": start, "end": end, "text": text,
+        ])
+    }
+
+    /// Frees Qwen from RAM if the process is running (it reloads on the next request).
+    func unload() async -> Bool {
+        guard let process, process.isRunning else { return false }
+        return (try? await send(["type": "unload"])) != nil
     }
 
     private func send(_ fields: [String: String]) async throws -> Data {

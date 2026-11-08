@@ -65,6 +65,8 @@ final class AppState: ObservableObject {
     @Published var isWarmingAI = false
     /// Most important questions heard so far, extracted with the live summary.
     @Published var keyQuestions: [String] = []
+    /// Transcript fragments saved in the meeting memory on disk.
+    @Published var memorySegments = 0
     @Published var qaQuestion = ""
     @Published var qaItems: [QAItem] = []
     @Published var qaRevision = 0
@@ -129,9 +131,19 @@ final class AppState: ObservableObject {
 
     /// Transcript sent whole to Qwen while it fits in one pass (~3-4k tokens).
     static let singlePassChars = 12000
-    /// Most recent part of the transcript sent with each question (the live
-    /// notes cover the rest). Kept small: big prompts are slow and spike memory.
-    static let questionChars = 12000
+    /// Most recent part of the transcript sent with each question. Older parts
+    /// come from the live notes and the meeting memory on disk, so the prompt
+    /// stays the same size however long the meeting is.
+    static let questionChars = 6000
+    /// Size of each fragment saved to the meeting memory (~3-4 minutes of talk).
+    static let segmentChars = 3000
+
+    // Meeting memory on disk (Application Support/VoiceLoggerMac/memory/<session>.jsonl)
+    private var sessionID: String?
+    /// Exclusive end entry index of each closed fragment.
+    private var segmentEnds: [Int] = []
+    private var segmentsSent = 0
+    private var isRemembering = false
     private var isLoading = false
 
     init() {
@@ -351,6 +363,8 @@ final class AppState: ObservableObject {
         transcriptRevision += 1
         notifyAlert(matched)
         hasUnsummarizedText = true
+        closeSegments()
+        rememberPendingSegments()
         maybeAutoSummarize()
     }
 
@@ -371,7 +385,8 @@ final class AppState: ObservableObject {
         let elapsed = Int(Date().timeIntervalSince(start))
         metrics.elapsed = String(format: "%02d:%02d:%02d", elapsed / 3600, (elapsed % 3600) / 60, elapsed % 60)
         // Also checked every second so the last phrases get summarized even
-        // when nobody speaks for a while.
+        // when nobody speaks for a while, and failed memory writes are retried.
+        rememberPendingSegments()
         maybeAutoSummarize()
     }
 
@@ -512,6 +527,83 @@ final class AppState: ObservableObject {
         }
     }
 
+    private var memoryDirectory: URL {
+        logger.logsDirectory.deletingLastPathComponent().appendingPathComponent("memory", isDirectory: true)
+    }
+
+    private func currentSession() -> String {
+        if let sessionID { return sessionID }
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        let id = f.string(from: Date())
+        sessionID = id
+        return id
+    }
+
+    /// Groups finished entries into fragments of ~`segmentChars`. The last
+    /// entry is never included: it can still grow when phrases are merged, and
+    /// a saved fragment must not change.
+    private func closeSegments() {
+        var size = 0
+        var index = segmentEnds.last ?? 0
+        while index < entries.count - 1 {
+            size += entries[index].text.count + 1
+            index += 1
+            if size >= Self.segmentChars {
+                segmentEnds.append(index)
+                size = 0
+            }
+        }
+    }
+
+    /// Sends closed fragments to the meeting memory on disk, one at a time.
+    private func rememberPendingSegments() {
+        guard !isRemembering, segmentsSent < segmentEnds.count, let server = resolveServer() else { return }
+        let index = segmentsSent
+        let start = index == 0 ? 0 : segmentEnds[index - 1]
+        let end = segmentEnds[index]
+        guard start < end, end <= entries.count else { return }
+        let slice = entries[start..<end]
+        let text = slice.map { "[\($0.timestamp)] \($0.text)" }.joined(separator: "\n")
+        let firstStamp = slice.first?.timestamp ?? ""
+        let lastStamp = slice.last?.timestamp ?? ""
+        let session = currentSession()
+        let directory = memoryDirectory.path
+        let generation = aiGeneration
+        isRemembering = true
+        Task {
+            var stored = false
+            do {
+                try await server.remember(
+                    session: session, memoryDir: directory, index: index,
+                    start: firstStamp, end: lastStamp, text: text
+                )
+                stored = true
+            } catch {
+                // Retried on the next tick.
+            }
+            self.isRemembering = false
+            guard generation == self.aiGeneration else { return }
+            if stored {
+                self.segmentsSent = index + 1
+                self.memorySegments = index + 1
+                self.rememberPendingSegments()
+            }
+        }
+    }
+
+    /// Frees Qwen from RAM now (it reloads by itself on the next request).
+    func unloadAI() {
+        guard let qwen else {
+            toast("La IA no está cargada.")
+            return
+        }
+        Task {
+            let freed = await qwen.unload()
+            self.toast(freed ? "Memoria de la IA liberada." : "La IA no está cargada.")
+        }
+    }
+
     var canAsk: Bool {
         !qaQuestion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !entries.isEmpty
     }
@@ -547,11 +639,16 @@ final class AppState: ObservableObject {
         let lang = summaryLang
         let context = String(text.suffix(Self.questionChars))
         let notes = liveMarkdown
+        let session = currentSession()
+        let directory = memoryDirectory.path
         Task {
             let answer: String
             let failed: Bool
             do {
-                answer = try await server.ask(question: question, text: context, notes: notes, lang: lang)
+                answer = try await server.ask(
+                    question: question, text: context, notes: notes,
+                    session: session, memoryDir: directory, lang: lang
+                )
                 failed = false
             } catch {
                 answer = error.localizedDescription
@@ -650,6 +747,11 @@ final class AppState: ObservableObject {
         liveMarkdown = ""
         summarizedText = ""
         keyQuestions = []
+        // A cleared transcript starts a new memory session (the old file stays on disk).
+        sessionID = nil
+        segmentEnds = []
+        segmentsSent = 0
+        memorySegments = 0
         hasUnsummarizedText = false
         lastSummaryAt = nil
         aiGeneration += 1
@@ -1318,6 +1420,7 @@ struct FullView: View {
             Button("Copiar transcripción", systemImage: "doc.on.doc") { state.copyAll() }
             Button("Abrir carpeta de logs", systemImage: "folder") { state.openLogsFolder() }
             Button("Editar contexto de la IA…", systemImage: "brain") { state.openAIContext() }
+            Button("Liberar memoria de la IA", systemImage: "memorychip") { state.unloadAI() }
             Divider()
             Toggle("Siempre encima", isOn: $state.alwaysOnTop)
             Toggle("Atenuar al quitar el ratón", isOn: $state.dimWhenIdle)
@@ -1586,6 +1689,10 @@ struct FullView: View {
     private var footer: some View {
         HStack(spacing: 6) {
             Text("\(state.entries.count) bloques · \(state.wordCount) palabras")
+            if state.memorySegments > 0 {
+                Text("· \(state.memorySegments) fragmentos en memoria")
+                    .help("Partes antiguas de la reunión guardadas en disco; la IA trae solo las relevantes al responder")
+            }
             Spacer()
             Button { state.openLogsFolder() } label: {
                 Label("Logs locales", systemImage: "folder")
