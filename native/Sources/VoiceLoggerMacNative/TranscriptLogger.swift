@@ -44,6 +44,22 @@ public final class TranscriptLogger: @unchecked Sendable {
         return entry
     }
 
+    /// One line per phrase in `diagnostico_YYYY-MM-DD.jsonl`: what Whisper
+    /// returned, what was kept and why. Used to find where speech gets lost.
+    public func diagnostic(_ fields: [String: String]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys]),
+              var line = String(data: data, encoding: .utf8) else { return }
+        line += "\n"
+        let today = {
+            let f = DateFormatter()
+            f.dateFormat = "yyyy-MM-dd"
+            return f.string(from: Date())
+        }()
+        lock.lock()
+        defer { lock.unlock() }
+        Self.append(line, to: logsDirectory.appendingPathComponent("diagnostico_\(today).jsonl"))
+    }
+
     private func fileURLs() -> (URL, URL) {
         let today = {
             let f = DateFormatter()

@@ -5,7 +5,11 @@ import WhisperKit
 /// `mlx-community/whisper-large-v3-turbo-q4` is the quality reference;
 /// the native equivalent is WhisperKit's CoreML `large-v3` turbo model.
 public protocol Transcriber: Sendable {
-    func transcribe(_ audio: [Float], language: String) async throws -> (text: String, language: String)
+    /// - prompt: context for Whisper (vocabulary + the end of what was just said),
+    ///   so names stay consistent and phrases cut mid-sentence keep their meaning.
+    /// - relaxed: second attempt that keeps speech Whisper would skip as "no
+    ///   speech" (e.g. a voice over background music).
+    func transcribe(_ audio: [Float], language: String, prompt: String?, relaxed: Bool) async throws -> (text: String, language: String)
 }
 
 /// WhisperKit (CoreML on Apple Neural Engine) transcriber.
@@ -50,11 +54,19 @@ public final class WhisperKitTranscriber: Transcriber, @unchecked Sendable {
         self.pipe = try await WhisperKit(WhisperKitConfig(model: name, verbose: false))
     }
 
-    public func transcribe(_ audio: [Float], language: String) async throws -> (text: String, language: String) {
+    public func transcribe(_ audio: [Float], language: String, prompt: String?, relaxed: Bool) async throws -> (text: String, language: String) {
         await gate.wait()
         defer { gate.signal() }
         let lang: String? = (language == "auto" || language.isEmpty) ? nil : language
-        let options = DecodingOptions(language: lang, detectLanguage: lang == nil)
+        var options = DecodingOptions(language: lang, detectLanguage: lang == nil)
+        if let prompt, !prompt.isEmpty, let tokenizer = pipe.tokenizer {
+            // Same recipe as WhisperKit's CLI: text tokens only, no special tokens.
+            options.promptTokens = tokenizer.encode(text: " " + prompt)
+                .filter { $0 < tokenizer.specialTokens.specialTokenBegin }
+        }
+        if relaxed {
+            options.noSpeechThreshold = 1.0  // never discard a segment as "no speech"
+        }
         let results = try await pipe.transcribe(audioArray: audio, decodeOptions: options)
         let text = results.map(\.text).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
         let detected = results.first?.language ?? (lang ?? "en")
@@ -65,7 +77,7 @@ public final class WhisperKitTranscriber: Transcriber, @unchecked Sendable {
 /// Placeholder kept for tests / offline UI work.
 public struct StubTranscriber: Transcriber {
     public init() {}
-    public func transcribe(_ audio: [Float], language: String) async throws -> (text: String, language: String) {
+    public func transcribe(_ audio: [Float], language: String, prompt: String?, relaxed: Bool) async throws -> (text: String, language: String) {
         ("[stub: \(audio.count) samples, WhisperKit pendiente]", language)
     }
 }

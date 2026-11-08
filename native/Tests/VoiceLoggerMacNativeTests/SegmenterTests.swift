@@ -43,8 +43,9 @@ final class SegmenterTests: XCTestCase {
             index = end
         }
         seg.flush()
-        XCTAssertEqual(phrases.count, 3)
+        XCTAssertGreaterThanOrEqual(phrases.count, 3)
         XCTAssertLessThanOrEqual(phrases.map(\.count).max() ?? 0, 16000 * 8)
+        XCTAssertEqual(phrases.map(\.count).reduce(0, +), speech.count) // no audio lost at the cuts
     }
 
     /// Tiny buffers (smaller than 30 ms) must still detect silence after speech.
@@ -69,8 +70,26 @@ final class SegmenterTests: XCTestCase {
             seg.consume(Array(speech[start..<min(start + 1024, speech.count)]))
         }
         seg.flush()
-        XCTAssertEqual(phrases.count, 3)
+        XCTAssertGreaterThanOrEqual(phrases.count, 3)
         XCTAssertLessThanOrEqual(phrases.map(\.count).max() ?? 0, 16000 * 5)
+        XCTAssertEqual(phrases.map(\.count).reduce(0, +), speech.count)
+    }
+
+    /// In continuous speech the max-length cut lands on the short pause between
+    /// words (here at 7.2 s), not in the middle of a word at exactly 8 s.
+    func testMaxLengthCutsAtThePause() {
+        var phrases: [[Float]] = []
+        let seg = PhraseSegmenter(onPhrase: { audio, _ in phrases.append(audio) })
+        func tone(_ count: Int) -> [Float] { (0..<count).map { Float(sin(Double($0) * 0.3)) * 0.2 } }
+        let audio = tone(Int(16000 * 7.2)) + [Float](repeating: 0.0005, count: Int(16000 * 0.12)) + tone(Int(16000 * 4.68))
+        for start in stride(from: 0, to: audio.count, by: 1024) {
+            seg.consume(Array(audio[start..<min(start + 1024, audio.count)]))
+        }
+        seg.flush()
+        let first = Double(phrases.first?.count ?? 0) / 16000
+        XCTAssertGreaterThan(first, 7.1)
+        XCTAssertLessThan(first, 7.4)
+        XCTAssertEqual(phrases.map(\.count).reduce(0, +), audio.count)
     }
 }
 

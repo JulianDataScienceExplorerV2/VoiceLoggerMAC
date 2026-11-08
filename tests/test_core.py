@@ -486,6 +486,31 @@ class ReasoningLeakTests(unittest.TestCase):
             self.assertIn("do not show your reasoning", summarizer._system_prompt("en"))
 
 
+class EvaluateTranscriptTests(unittest.TestCase):
+    def setUp(self):
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+        import evaluar_transcripcion
+        self.ev = evaluar_transcripcion
+
+    def test_normalize_matches_spoken_and_written_forms(self):
+        self.assertEqual(self.ev.normalize("It's gonna be 7 pounds, cuz it's 8:30 a.m. [music]"),
+                         self.ev.normalize("it's going to be seven pounds because it's 8 30 am"))
+
+    def test_trims_reference_and_finds_lost_chunk(self):
+        intro = "this video starts long before the recording began with plenty of words "
+        said = ("so this is borough market the most famous place to eat in london where you will find "
+                "a huge array of street food and then we try the oysters from mersea island which are great ")
+        lost = "this grilled cheese sandwich has reached a mythical status level in the whole market today "
+        rest = "and next up we are trying the black pig sandwich with pork crackling and salsa verde on top"
+        ref = self.ev.normalize(intro + said + lost + rest)
+        blocks = [("10:00:00", self.ev.normalize(said)), ("10:00:30", self.ev.normalize(rest))]
+        result = self.ev.evaluate(ref, blocks)
+        self.assertEqual(result["ref_words"], len(self.ev.normalize(said + lost + rest)))  # intro trimmed
+        self.assertEqual(result["missing"][0][0], len(lost.split()))
+        self.assertIn("mythical status", result["missing"][0][2])
+        self.assertAlmostEqual(result["accuracy"], 1 - len(lost.split()) / result["ref_words"])
+
+
 class FitTokensTests(unittest.TestCase):
     def test_keeps_short_text(self):
         self.assertEqual(summarizer.fit_tokens("hola equipo", 100), "hola equipo")

@@ -136,6 +136,8 @@ final class AppState: ObservableObject {
     /// Language of AI answers (summary, key questions, Q&A). English for now.
     @Published var summaryLang = "en" { didSet { save() } }
     @Published var autoSummary = true { didSet { save() } }
+    /// Names, products and acronyms Whisper should spell right (comma separated).
+    @Published var vocabulary = "" { didSet { save() } }
     /// Live transcript speed (see `LiveSpeed`).
     @Published var liveSpeed = "normal" {
         didSet {
@@ -438,8 +440,25 @@ final class AppState: ObservableObject {
         do {
             let transcriber = try await ensureTranscriber()
             status = "Transcribiendo..."
-            let (raw, lang) = try await transcriber.transcribe(audio, language: language)
-            if let text = TranscriptCleaner.clean(raw) {
+            let prompt = whisperPrompt()
+            let seconds = Double(audio.count) / 16000
+            var (raw, lang) = try await transcriber.transcribe(audio, language: language, prompt: prompt, relaxed: false)
+            var text = TranscriptCleaner.clean(raw)
+            var firstRaw: String?
+            // Over background music Whisper may return only "[Music]" (or nothing)
+            // and the voice on top was lost: one more try keeping "no speech" parts.
+            if text == nil, seconds >= 2 {
+                firstRaw = raw
+                (raw, lang) = try await transcriber.transcribe(audio, language: language, prompt: prompt, relaxed: true)
+                text = TranscriptCleaner.clean(raw)
+            }
+            var diagnostic = [
+                "time": ts, "seconds": String(format: "%.1f", seconds), "raw": raw,
+                "kept": text ?? "", "result": text == nil ? "descartado" : (firstRaw == nil ? "ok" : "recuperado"),
+            ]
+            if let firstRaw { diagnostic["raw_first_try"] = firstRaw }
+            logger.diagnostic(diagnostic)
+            if let text {
                 logger.log(text: text, model: "whisperkit:\(modelName)", lang: lang, timestamp: ts)
                 appendEntry(text: text, lang: lang, timestamp: ts)
             }
@@ -454,6 +473,16 @@ final class AppState: ObservableObject {
         } else {
             status = "Detenido"
         }
+    }
+
+    /// Context for Whisper: the vocabulary plus the end of the last block.
+    private func whisperPrompt() -> String? {
+        var parts: [String] = []
+        let words = vocabulary.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !words.isEmpty { parts.append(String(words.prefix(300))) }
+        if let last = entries.last?.text { parts.append(String(last.suffix(160))) }
+        let prompt = parts.joined(separator: ". ")
+        return prompt.isEmpty ? nil : prompt
     }
 
     private func updateLevel(_ value: Float) {
@@ -1203,6 +1232,7 @@ final class AppState: ObservableObject {
         d.set(qwenModel, forKey: "qwen_model")
         d.set(longAnswers, forKey: "long_answers")
         d.set(liveSpeed, forKey: "live_speed")
+        d.set(vocabulary, forKey: "vocabulary")
         d.set(askTasksOnStop, forKey: "ask_tasks_on_stop")
         d.set(allowWebSearch, forKey: "allow_web_search")
         d.set(askModelsOnLaunch, forKey: "ask_models_on_launch")
@@ -1224,7 +1254,7 @@ final class AppState: ObservableObject {
         let keys = [
             "model", "language", "sensitivity", "alerts", "alert_sound", "autoscroll", "ai_lang", "auto_summary",
             "font_size", "always_on_top", "dim_when_idle", "live_interval", "qwen_model", "ui_scale",
-            "long_answers", "live_speed", "show_key_questions", "ask_tasks_on_stop", "allow_web_search", "ask_models_on_launch", "models_chosen", "python_root",
+            "long_answers", "live_speed", "vocabulary", "show_key_questions", "ask_tasks_on_stop", "allow_web_search", "ask_models_on_launch", "models_chosen", "python_root",
         ]
         for key in keys {
             if let value = old.object(forKey: key) { d.set(value, forKey: key) }
@@ -1250,6 +1280,7 @@ final class AppState: ObservableObject {
         qwenModel = QwenModels.choices.contains(where: { $0.id == savedModel }) ? savedModel : QwenModels.default
         longAnswers = d.object(forKey: "long_answers") as? Bool ?? true
         liveSpeed = d.string(forKey: "live_speed") ?? "normal"
+        vocabulary = d.string(forKey: "vocabulary") ?? ""
         askTasksOnStop = d.object(forKey: "ask_tasks_on_stop") as? Bool ?? true
         allowWebSearch = d.object(forKey: "allow_web_search") as? Bool ?? true
         askModelsOnLaunch = d.object(forKey: "ask_models_on_launch") as? Bool ?? true
@@ -2288,6 +2319,9 @@ struct SettingsPopover: View {
                     Text("Portugués").tag("pt")
                     Text("Auto-detectar").tag("auto")
                 }
+                TextField("Vocabulario", text: $state.vocabulary,
+                          prompt: Text("Nombres, productos, siglas: Borough Market, Kappacasein, Poilâne…"))
+                    .help("Whisper los usa como pista para escribirlos bien")
                 Picker("Velocidad del texto en vivo", selection: $state.liveSpeed) {
                     ForEach(LiveSpeed.all) { speed in
                         Text(speed.label).tag(speed.id)

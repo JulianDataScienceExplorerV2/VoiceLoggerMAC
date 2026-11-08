@@ -6,7 +6,10 @@ import Foundation
 /// Samples arrive as 16 kHz mono Float32 buffers of any size and are re-cut
 /// into exact 30 ms chunks (like the Python app does) before the VAD runs.
 /// Completed phrases are delivered through `onPhrase` as a single Float32
-/// buffer plus timestamp.
+/// buffer plus timestamp. A phrase ends after a pause, or when it reaches the
+/// max length: then it is cut at the quietest moment of its last 1.5 s (a gap
+/// between words) instead of mid-word, and the rest starts the next phrase, so
+/// no audio is lost.
 public final class PhraseSegmenter: @unchecked Sendable {
     public var energyThreshold: Float
     public private(set) var silenceTimeoutSec: Double
@@ -20,6 +23,11 @@ public final class PhraseSegmenter: @unchecked Sendable {
     private var streak = 0
     private var current: [Float] = []
     private var preRoll: [[Float]] = []
+    private var preRollLevels: [Float] = []
+    /// RMS of each 30 ms chunk in `current` (to find a quiet place to cut).
+    private var currentLevels: [Float] = []
+    /// How far back from the max length to look for that quiet place.
+    let cutLookbackSec = 1.5
     private var voiced = 0
     private var silence = 0
     private var timestamp: String?
@@ -62,7 +70,9 @@ public final class PhraseSegmenter: @unchecked Sendable {
         speaking = false
         streak = 0
         current = []
+        currentLevels = []
         preRoll = []
+        preRollLevels = []
         voiced = 0
         silence = 0
         timestamp = nil
@@ -97,7 +107,11 @@ public final class PhraseSegmenter: @unchecked Sendable {
 
         if !speaking {
             preRoll.append(chunk)
-            if preRoll.count > 6 { preRoll.removeFirst() }
+            preRollLevels.append(rms)
+            if preRoll.count > 6 {
+                preRoll.removeFirst()
+                preRollLevels.removeFirst()
+            }
             if above {
                 streak += 1
                 if streak >= 2 {
@@ -106,6 +120,7 @@ public final class PhraseSegmenter: @unchecked Sendable {
                     silence = 0
                     voiced = preRoll.count
                     current = preRoll.flatMap { $0 }
+                    currentLevels = preRollLevels
                     timestamp = Self.nowString()
                 }
             } else {
@@ -115,6 +130,7 @@ public final class PhraseSegmenter: @unchecked Sendable {
         }
 
         current.append(contentsOf: chunk)
+        currentLevels.append(rms)
         if above {
             voiced += 1
             silence = 0
@@ -126,18 +142,55 @@ public final class PhraseSegmenter: @unchecked Sendable {
         let maxPhraseChunks = max(10, Int(maxSpeechSec / chunkSec))
         let minVoicedChunks = max(2, Int(minSpeechSec / chunkSec))
 
-        if silence >= maxSilenceChunks || current.count / chunk.count >= maxPhraseChunks {
+        if silence >= maxSilenceChunks {
             if voiced >= minVoicedChunks, let ts = timestamp {
                 onPhrase(Self.prepare(current), ts)
             }
-            speaking = false
-            current = []
-            voiced = 0
-            silence = 0
-            preRoll = []
-            timestamp = nil
+            endPhrase()
+        } else if currentLevels.count >= maxPhraseChunks {
+            cutAtQuietestPoint(chunkSize: chunk.count, minVoicedChunks: minVoicedChunks)
         }
         return rms
+    }
+
+    /// Max length reached in continuous speech: cut after the quietest chunk of
+    /// the last `cutLookbackSec` and keep the rest as the start of the next phrase.
+    private func cutAtQuietestPoint(chunkSize: Int, minVoicedChunks: Int) {
+        let window = min(currentLevels.count - 1, Int(cutLookbackSec / chunkSec))
+        let start = currentLevels.count - window
+        var cutChunk = currentLevels.count
+        var quietest = Float.greatestFiniteMagnitude
+        for index in start..<currentLevels.count where currentLevels[index] < quietest {
+            quietest = currentLevels[index]
+            cutChunk = index + 1
+        }
+        let cutSample = min(current.count, cutChunk * chunkSize)
+        let head = Array(current[..<cutSample])
+        let tail = Array(current[cutSample...])
+        let tailLevels = Array(currentLevels[min(cutChunk, currentLevels.count)...])
+        if voiced >= minVoicedChunks, let ts = timestamp {
+            onPhrase(Self.prepare(head), ts)
+        }
+        guard !tail.isEmpty else {
+            endPhrase()
+            return
+        }
+        current = tail
+        currentLevels = tailLevels
+        voiced = tailLevels.filter { $0 >= energyThreshold }.count
+        silence = tailLevels.reversed().prefix { $0 < energyThreshold }.count
+        timestamp = Self.nowString()
+    }
+
+    private func endPhrase() {
+        speaking = false
+        current = []
+        currentLevels = []
+        voiced = 0
+        silence = 0
+        preRoll = []
+        preRollLevels = []
+        timestamp = nil
     }
 
     public func flush() {

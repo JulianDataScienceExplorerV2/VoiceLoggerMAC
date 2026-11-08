@@ -44,6 +44,21 @@ Atajos: ⌘↩ iniciar/detener · ⌘⇧P pausar · ⌘S guardar TXT · ⌘⇧C 
 Tamaño: ⚙ → *Tamaño de la interfaz* (Normal / Grande / Muy grande / Enorme) agranda barra, cabeceras,
 botones y ajustes; *Letra de lectura* (A- / A+) agranda transcripción, resumen y respuestas.
 
+## Calidad de la transcripción
+
+- **Cortes en el silencio:** una frase termina tras una pausa, o al llegar al máximo (5/8/12 s según la velocidad);
+  en ese caso se corta en el momento más silencioso de su último 1,5 s, entre palabras, y el resto empieza la frase
+  siguiente: no se pierde audio ni se parten palabras.
+- **Contexto para Whisper:** recibe la frase anterior y tu **vocabulario** (⚙ → Vocabulario: nombres, productos,
+  siglas) para escribir bien los nombres y no perder el hilo.
+- **Música de fondo:** si Whisper devuelve solo «[Music]» o nada en un bloque de 2 s o más, se reintenta una vez sin
+  descartar «no voz». Se quitan las etiquetas de sonido ([Music], (laughter), ♪…) y los bucles («X… X… X…»).
+- **Diagnóstico:** cada bloque queda en `logs/diagnostico_AAAA-MM-DD.jsonl` (texto crudo de Whisper, qué se guardó,
+  si se recuperó en el segundo intento).
+- **Medir:** `python3 tools/evaluar_transcripcion.py reunion.txt referencia.txt` compara con un texto de referencia
+  (p. ej. subtítulos de YouTube) y da precisión, tramos perdidos y texto añadido. Línea base con el video de Borough
+  Market antes de estas mejoras: **81,6 %**, con 17 tramos perdidos (393 palabras).
+
 ## IA en vivo: resumen + preguntas clave (Qwen local)
 
 - Al pulsar **Iniciar**, la app arranca `summarizer.py serve`: un proceso Python que carga

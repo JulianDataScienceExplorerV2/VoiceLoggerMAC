@@ -44,4 +44,31 @@ final class TextFormattingTests: XCTestCase {
         XCTAssertEqual(buffer.append(Data(":\"b\"}\n\n".utf8)), [Data("{\"id\":\"b\"}".utf8)])
         XCTAssertEqual(buffer.append(Data()), [])
     }
+
+    func testSoundTagsAreRemoved() {
+        XCTAssertNil(TranscriptCleaner.clean("[Music]"))
+        XCTAssertNil(TranscriptCleaner.clean("(upbeat music) ♪"))
+        XCTAssertTrue(TranscriptCleaner.isNonSpeechOnly(" [MUSIC PLAYING] "))
+        XCTAssertTrue(TranscriptCleaner.isNonSpeechOnly(""))
+        XCTAssertFalse(TranscriptCleaner.isNonSpeechOnly("[Music] Hello, we're now at Bomba Paella"))
+        XCTAssertEqual(TranscriptCleaner.clean("[Music] Hello, we're now at Bomba Paella"), "Hello, we're now at Bomba Paella")
+    }
+
+    func testRepetitionLoopsAreRemoved() {
+        let loop = "I've come up with a lot of fun. It's really exciting. And I've come up with a lot of fun, "
+            + "and I've come up with a lot of fun, So it's gonna be a food tour challenge."
+        XCTAssertEqual(TranscriptCleaner.clean(loop),
+                       "I've come up with a lot of fun. It's really exciting. So it's gonna be a food tour challenge.")
+        let pot = "- We reveal this big pot - Yeah. - every day. - Yeah. - We reveal this big pot, We've done a mini one."
+        XCTAssertEqual(TranscriptCleaner.clean(pot)?.components(separatedBy: "We reveal this big pot").count, 2)
+    }
+
+    func testRealRepetitionStays() {
+        for text in ["Of course, of course, of course. I know all the moves.",
+                     "Tom's great great great great great granddad",
+                     "It's now 8:30 a.m. They're doing some road-work, a mind-blowing array."] {
+            XCTAssertEqual(TranscriptCleaner.clean(text), text)
+        }
+    }
 }
+
