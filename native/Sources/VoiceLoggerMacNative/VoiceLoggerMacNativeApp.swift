@@ -286,7 +286,7 @@ final class AppState: ObservableObject {
         readingHoverTask?.cancel()
         readingPinned = false
         guard readingAnswers else { return }
-        withAnimation(.easeIn(duration: 0.15)) { readingAnswers = false }
+        withAnimation(.easeIn(duration: 0.12)) { readingAnswers = false }
     }
 
     /// Mouse on the corner button: opens after a short pause, so just passing
@@ -301,12 +301,13 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Mouse leaves the enlarged panel: a peek closes after a moment; pinned stays.
+    /// Mouse leaves the enlarged panel: a peek closes right away (a short grace
+    /// so a slip over the edge does not close it); pinned stays.
     func hoverReadingPanel(_ inside: Bool) {
         readingHoverTask?.cancel()
         guard !inside, readingAnswers, !readingPinned else { return }
         readingHoverTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(700))
+            try? await Task.sleep(for: .milliseconds(150))
             guard !Task.isCancelled else { return }
             self?.closeReading()
         }
@@ -2363,8 +2364,18 @@ struct FullView: View {
                     .onChange(of: state.qaRevision) { _, _ in
                         guard let last = state.qaItems.last else { return }
                         withAnimation(.easeOut(duration: 0.25)) {
-                            proxy.scrollTo(last.id, anchor: .bottom)
+                            // Enlarged: show where the newest answer starts, to read it from the top.
+                            proxy.scrollTo(last.id, anchor: expanded ? .top : .bottom)
                         }
+                    }
+                    .task {
+                        // Enlarged: open at the start of the last answered question,
+                        // no need to look for it.
+                        guard expanded else { return }
+                        let answered = state.qaItems.last(where: { $0.answer != nil && !$0.failed })
+                        guard let target = (answered ?? state.qaItems.last)?.id else { return }
+                        try? await Task.sleep(for: .milliseconds(30))  // let the list lay out first
+                        proxy.scrollTo(target, anchor: .top)
                     }
                 }
                 // Answers always keep some room, even with several detected questions.

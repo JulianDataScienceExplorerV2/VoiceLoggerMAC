@@ -205,7 +205,7 @@ Junto a la caja de preguntas eliges cómo responde la IA:
 El modo por defecto se cambia en ⚙. A internet solo sale el texto de la pregunta.
 
 **Leer en grande:** el botón ⤢ de la esquina del panel *Preguntas* agranda las respuestas sobre toda la ventana, con
-letra más grande (+3) y líneas de largo cómodo. Deja el mouse sobre ⤢ un momento para echar un vistazo (se cierra al
+letra más grande (+3) y líneas de largo cómodo, y abre en la última pregunta respondida. Deja el mouse sobre ⤢ un momento para echar un vistazo (se cierra al
 sacar el mouse) o haz clic / ⌘⇧L para que se quede; 📌 lo fija y Esc lo cierra. La transcripción sigue debajo.
 
 ## Ampliar con internet 🌐
