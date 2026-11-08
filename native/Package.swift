@@ -13,7 +13,7 @@ let package = Package(
         // the app; swift-huggingface downloads it (same cache as Python) and
         // swift-transformers provides the tokenizer. MLX's Metal shaders are only
         // built by xcodebuild (native/package.sh), not by `swift build`.
-        .package(url: "https://github.com/ml-explore/mlx-swift", .upToNextMinor(from: "0.33.0")),
+        .package(url: "https://github.com/ml-explore/mlx-swift", .upToNextMinor(from: "0.32.3")),
         // The FoundationModels bridge (default trait) needs the macOS 27 SDK and is not used.
         .package(url: "https://github.com/ml-explore/mlx-swift-lm", .upToNextMinor(from: "3.32.3"), traits: []),
         .package(url: "https://github.com/huggingface/swift-huggingface", from: "0.9.0"),
