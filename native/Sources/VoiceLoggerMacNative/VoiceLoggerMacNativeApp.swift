@@ -286,7 +286,7 @@ final class AppState: ObservableObject {
         readingHoverTask?.cancel()
         readingPinned = false
         guard readingAnswers else { return }
-        withAnimation(.easeIn(duration: 0.12)) { readingAnswers = false }
+        withAnimation(.easeInOut(duration: 0.2)) { readingAnswers = false }
     }
 
     /// Mouse on the corner button: opens after a short pause, so just passing
@@ -301,13 +301,13 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Mouse leaves the enlarged panel: a peek closes right away (a short grace
-    /// so a slip over the edge does not close it); pinned stays.
+    /// Mouse leaves the enlarged panel: a peek closes after 0.3 s (quick, but a
+    /// slip over the edge does not close it); pinned stays.
     func hoverReadingPanel(_ inside: Bool) {
         readingHoverTask?.cancel()
         guard !inside, readingAnswers, !readingPinned else { return }
         readingHoverTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(150))
+            try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled else { return }
             self?.closeReading()
         }
