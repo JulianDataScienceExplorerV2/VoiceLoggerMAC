@@ -261,6 +261,57 @@ final class AppState: ObservableObject {
         }
     }
 
+    // MARK: Reading mode (answers enlarged over the window)
+
+    /// The Questions panel is shown enlarged over the transcript and summary,
+    /// with bigger text, to read long answers comfortably.
+    @Published var readingAnswers = false
+    /// Opened with a click or ⌘⇧L: stays open until closed. Opened by resting
+    /// the mouse on the corner button ("peek"): closes when the mouse leaves.
+    @Published var readingPinned = false
+    private var readingHoverTask: Task<Void, Never>?
+
+    func toggleReading() {
+        if readingAnswers { closeReading() } else { openReading(pinned: true) }
+    }
+
+    func openReading(pinned: Bool) {
+        readingHoverTask?.cancel()
+        if pinned { readingPinned = true }
+        guard !readingAnswers else { return }
+        withAnimation(.easeOut(duration: 0.2)) { readingAnswers = true }
+    }
+
+    func closeReading() {
+        readingHoverTask?.cancel()
+        readingPinned = false
+        guard readingAnswers else { return }
+        withAnimation(.easeIn(duration: 0.15)) { readingAnswers = false }
+    }
+
+    /// Mouse on the corner button: opens after a short pause, so just passing
+    /// over it does nothing.
+    func hoverReadingButton(_ inside: Bool) {
+        readingHoverTask?.cancel()
+        guard inside, !readingAnswers else { return }
+        readingHoverTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            self?.openReading(pinned: false)
+        }
+    }
+
+    /// Mouse leaves the enlarged panel: a peek closes after a moment; pinned stays.
+    func hoverReadingPanel(_ inside: Bool) {
+        readingHoverTask?.cancel()
+        guard !inside, readingAnswers, !readingPinned else { return }
+        readingHoverTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(700))
+            guard !Task.isCancelled else { return }
+            self?.closeReading()
+        }
+    }
+
     func toast(_ message: String, kind: String = "info") {
         withAnimation(.easeOut(duration: 0.2)) {
             toastMessage = message
@@ -1855,12 +1906,25 @@ struct FullView: View {
                     summaryPanel
                         .padding(.bottom, 5)
                         .frame(minHeight: 150, idealHeight: 320, maxHeight: .infinity)
-                    questionsPanel
+                    // While it is enlarged the small one stays in place (the split
+                    // keeps its sizes) but hidden and inactive.
+                    questionsPanel(expanded: false)
                         .padding(.top, 5)
                         .frame(minHeight: 190, idealHeight: 320, maxHeight: .infinity)
+                        .opacity(state.readingAnswers ? 0 : 1)
+                        .allowsHitTesting(!state.readingAnswers)
+                        .accessibilityHidden(state.readingAnswers)
                 }
                 .padding(.leading, 5)
                 .frame(minWidth: 300, idealWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .overlay {
+                if state.readingAnswers {
+                    questionsPanel(expanded: true)
+                        .shadow(color: .black.opacity(0.45), radius: 18, y: 6)
+                        .onHover { state.hoverReadingPanel($0) }
+                        .transition(.scale(scale: 0.94, anchor: .bottomTrailing).combined(with: .opacity))
+                }
             }
             footer
         }
@@ -2200,7 +2264,40 @@ struct FullView: View {
 
     // MARK: Questions
 
-    private var questionsPanel: some View {
+    /// Points added to the reading font while the answers are enlarged.
+    static let readingExtraFont = 3
+
+    /// Corner button of the Questions panel. Small panel: rest the mouse on it
+    /// to peek (closes when the mouse leaves) or click to keep it open (⌘⇧L).
+    /// Enlarged: pin and close (Esc).
+    @ViewBuilder
+    private func readingControls(expanded: Bool) -> some View {
+        if expanded {
+            IconButton(
+                systemImage: state.readingPinned ? "pin.fill" : "pin",
+                help: state.readingPinned
+                    ? "Fijado: se queda grande hasta que lo cierres"
+                    : "Fijar: que no se cierre al sacar el mouse",
+                active: state.readingPinned
+            ) {
+                state.readingPinned.toggle()
+            }
+            IconButton(systemImage: "arrow.down.right.and.arrow.up.left", help: "Volver al tamaño normal (Esc)") {
+                state.closeReading()
+            }
+            .keyboardShortcut(.cancelAction)
+        } else {
+            IconButton(
+                systemImage: "arrow.up.left.and.arrow.down.right",
+                help: "Agrandar las respuestas para leer: deja el mouse aquí un momento, o haz clic para que se quede (⌘⇧L)"
+            ) {
+                state.toggleReading()
+            }
+            .onHover { state.hoverReadingButton($0) }
+        }
+    }
+
+    private func questionsPanel(expanded: Bool) -> some View {
         Panel(title: "Preguntas", systemImage: "questionmark.bubble", tint: Theme.qa) {
             HStack(spacing: 10) {
                 Picker("Respuestas", selection: $state.longAnswers) {
@@ -2230,6 +2327,7 @@ struct FullView: View {
                     .scaledFont(11)
                     .foregroundStyle(.secondary)
                 }
+                readingControls(expanded: expanded)
             }
         } content: {
             VStack(spacing: 0) {
@@ -2249,11 +2347,18 @@ struct FullView: View {
                                 .foregroundStyle(.secondary)
                             }
                             ForEach(state.qaItems) { item in
-                                QARow(item: item, fontSize: state.transcriptFontSize, allowWeb: state.allowWebSearch)
-                                    .id(item.id)
+                                QARow(
+                                    item: item,
+                                    fontSize: state.transcriptFontSize + (expanded ? Self.readingExtraFont : 0),
+                                    allowWeb: state.allowWebSearch
+                                )
+                                .id(item.id)
                             }
                         }
-                        .padding(14)
+                        // Enlarged: comfortable line length instead of the full window width.
+                        .frame(maxWidth: expanded ? CGFloat(980) : CGFloat.infinity, alignment: .leading)
+                        .frame(maxWidth: .infinity)
+                        .padding(expanded ? 20 : 14)
                     }
                     .onChange(of: state.qaRevision) { _, _ in
                         guard let last = state.qaItems.last else { return }
@@ -2799,6 +2904,8 @@ struct SessionCommands: Commands {
                 .keyboardShortcut("e", modifiers: .command)
             Button("Tareas → Recordatorios…") { AppState.shared.extractTasks() }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
+            Button("Leer respuestas en grande") { AppState.shared.toggleReading() }
+                .keyboardShortcut("l", modifiers: [.command, .shift])
             Divider()
             Button("Aumentar letra") { AppState.shared.changeFontSize(1) }
                 .keyboardShortcut("+", modifiers: .command)

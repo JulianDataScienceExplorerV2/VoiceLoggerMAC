@@ -39,7 +39,7 @@ Versión nativa para macOS en SwiftUI, conviviendo con la app Python/PySide6 de 
 └──────────────────────────────────────┴───────────────────────────────────┘
 ```
 
-Atajos: ⌘↩ iniciar/detener · ⌘⇧P pausar · ⌘S guardar TXT · ⌘⇧C copiar · ⌘R actualizar resumen · ⌘F filtrar · ⌘+ / ⌘- letra de lectura · ⌘⌥+ / ⌘⌥- tamaño de toda la interfaz.
+Atajos: ⌘↩ iniciar/detener · ⌘⇧P pausar · ⌘S guardar TXT · ⌘⇧C copiar · ⌘R actualizar resumen · ⌘F filtrar · ⌘+ / ⌘- letra de lectura · ⌘⌥+ / ⌘⌥- tamaño de toda la interfaz · ⌘⇧L leer respuestas en grande.
 
 Tamaño: ⚙ → *Tamaño de la interfaz* (Normal / Grande / Muy grande / Enorme) agranda barra, cabeceras,
 botones y ajustes; *Letra de lectura* (A- / A+) agranda transcripción, resumen y respuestas.
@@ -203,6 +203,10 @@ Junto a la caja de preguntas eliges cómo responde la IA:
 - **📋 Reunión:** responde **solo** con lo que se dijo; si no está, lo dice.
 
 El modo por defecto se cambia en ⚙. A internet solo sale el texto de la pregunta.
+
+**Leer en grande:** el botón ⤢ de la esquina del panel *Preguntas* agranda las respuestas sobre toda la ventana, con
+letra más grande (+3) y líneas de largo cómodo. Deja el mouse sobre ⤢ un momento para echar un vistazo (se cierra al
+sacar el mouse) o haz clic / ⌘⇧L para que se quede; 📌 lo fija y Esc lo cierra. La transcripción sigue debajo.
 
 ## Ampliar con internet 🌐
 
