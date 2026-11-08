@@ -740,6 +740,14 @@ final class AppState: ObservableObject {
         toast("Copiados \(entries.count) bloques")
     }
 
+    func copyText(_ text: String, message: String = "Copiado") {
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(clean, forType: .string)
+        toast(message)
+    }
+
     func copySummary() {
         guard !liveSummary.isEmpty else { return }
         NSPasteboard.general.clearContents()
@@ -1239,6 +1247,12 @@ struct QARow: View {
                 Text(item.question)
                     .font(.system(size: CGFloat(fontSize), weight: .semibold))
                     .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if let answer = item.answer, !item.failed {
+                    IconButton(systemImage: "doc.on.doc", help: "Copiar pregunta y respuesta") {
+                        AppState.shared.copyText("\(item.question)\n\n\(answer)", message: "Respuesta copiada")
+                    }
+                }
             }
             Group {
                 if let answer = item.answer {
@@ -1663,30 +1677,41 @@ struct FullView: View {
                 .foregroundStyle(.secondary)
             ForEach(Array(state.keyQuestions.prefix(5).enumerated()), id: \.offset) { item in
                 let answering = state.isAnswering(item.element)
-                Button {
-                    state.ask(item.element)
-                } label: {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Image(systemName: "questionmark.circle.fill")
-                            .foregroundStyle(Theme.qa)
-                        Text(MarkdownText.inline(item.element))
-                            .font(.system(size: CGFloat(max(12, state.transcriptFontSize - 2))))
-                            .lineLimit(2)
-                            .multilineTextAlignment(.leading)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        if answering {
-                            ProgressView().controlSize(.small)
-                            Text("Respondiendo…").scaledFont(11).foregroundStyle(Theme.qa)
-                        } else {
-                            Image(systemName: "arrow.right.circle")
-                                .foregroundStyle(.secondary)
+                let plain = String(MarkdownText.inline(item.element).characters)
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Button {
+                        state.ask(item.element)
+                    } label: {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Image(systemName: "questionmark.circle.fill")
+                                .foregroundStyle(Theme.qa)
+                            Text(MarkdownText.inline(item.element))
+                                .font(.system(size: CGFloat(max(12, state.transcriptFontSize - 2))))
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            if answering {
+                                ProgressView().controlSize(.small)
+                                Text("Respondiendo…").scaledFont(11).foregroundStyle(Theme.qa)
+                            } else {
+                                Image(systemName: "arrow.right.circle")
+                                    .foregroundStyle(.secondary)
+                            }
                         }
+                        .contentShape(Rectangle())
                     }
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
+                    .disabled(answering)
+                    .help("Pedir a la IA que la responda con lo dicho en la reunión (la respuesta sale abajo)")
+                    IconButton(systemImage: "doc.on.doc", help: "Copiar pregunta") {
+                        state.copyText(plain, message: "Pregunta copiada")
+                    }
                 }
-                .buttonStyle(.plain)
-                .disabled(answering)
-                .help("Pedir a la IA que la responda con lo dicho en la reunión (la respuesta sale abajo)")
+                .contextMenu {
+                    Button("Copiar pregunta") { state.copyText(plain, message: "Pregunta copiada") }
+                    Button("Preguntar a la IA") { state.ask(item.element) }
+                        .disabled(answering)
+                }
             }
         }
         .padding(12)
@@ -1870,7 +1895,7 @@ struct MenuBarContent: View {
     @Environment(\.dismissWindow) private var dismissWindow
 
     var body: some View {
-        Button("Mostrar ventana") { NSApp.activate() }
+        Button("Mostrar ventana") { NSApp.activate(ignoringOtherApps: true) }
         Button(state.isListening ? "Detener" : "Iniciar") {
             Task { await state.toggleListening() }
         }
@@ -1947,8 +1972,22 @@ struct SessionCommands: Commands {
     }
 }
 
+/// Launched with `swift run` or as the bare binary (no .app bundle), macOS
+/// does not treat the process as a regular foreground app: windows show and
+/// take clicks, but keyboard input (typing, ⌘C) stays in the Terminal and
+/// the window never becomes key, so text can't be typed, selected or copied.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.windows.first(where: { $0.styleMask.contains(.titled) })?.makeKeyAndOrderFront(nil)
+    }
+}
+
 @main
 struct VoiceLoggerMacNativeApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
     var body: some Scene {
         WindowGroup("VoiceLogger Mac") {
             ContentView()
