@@ -1,15 +1,18 @@
 """Pruebas del núcleo (sin Qt ni MLX): `python3 -m unittest discover -s tests`."""
+import io
 import os
 import sys
 import time
 import unittest
+from unittest import mock
 
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from audio_capture import CHUNK_SAMPLES, SAMPLE_RATE, PhraseSegmenter, prepare_phrase  # noqa: E402
-from summarizer import split_text  # noqa: E402
+import summarizer  # noqa: E402
+from summarizer import _tail_text, split_text  # noqa: E402
 from transcriber import extract_text, is_bad_transcript  # noqa: E402
 
 
@@ -58,6 +61,58 @@ class SplitTextTests(unittest.TestCase):
     def test_giant_line_is_split(self):
         chunks = split_text("x" * 2500, max_chars=1000)
         self.assertEqual([len(c) for c in chunks], [1000, 1000, 500])
+
+
+class TailTextTests(unittest.TestCase):
+    def test_short_text_is_untouched(self):
+        self.assertEqual(_tail_text("hola\nequipo", 100), "hola\nequipo")
+
+    def test_long_text_keeps_recent_whole_lines(self):
+        text = "\n".join(f"[00:00:{i:02d}] linea {i}" for i in range(50))
+        out = _tail_text(text, 120)
+        self.assertTrue(out.startswith("(… transcripción recortada"))
+        body = out.split("\n", 1)[1]
+        self.assertTrue(body.startswith("[00:00:"))  # no empieza a mitad de línea
+        self.assertTrue(out.endswith("linea 49"))
+
+
+class CliTests(unittest.TestCase):
+    """CLI que llama la app nativa: sin MLX, con el modelo simulado."""
+
+    def _run(self, argv, stdin_text):
+        out, err = io.StringIO(), io.StringIO()
+        code = summarizer.main(argv, stdin=io.StringIO(stdin_text), stdout=out, stderr=err)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_summary_ok(self):
+        with mock.patch.object(summarizer, "build_summary", return_value=("## Resumen\nok", None)) as fake:
+            code, out, err = self._run(["summary", "--lang", "en"], "[10:00:00] hola")
+        self.assertEqual((code, out, err), (0, "## Resumen\nok\n", ""))
+        fake.assert_called_once_with("[10:00:00] hola", "en")
+
+    def test_summary_error_goes_to_stderr(self):
+        with mock.patch.object(summarizer, "build_summary", return_value=("", "sin modelo")):
+            code, out, err = self._run(["summary"], "texto")
+        self.assertEqual((code, out, err), (1, "", "sin modelo\n"))
+
+    def test_ask_passes_question_starting_with_dash(self):
+        with mock.patch.object(summarizer, "ask_question", return_value="Respuesta") as fake:
+            code, out, _ = self._run(["ask", "--lang", "es", "--question=-¿qué se decidió?"], "texto")
+        self.assertEqual((code, out), (0, "Respuesta\n"))
+        fake.assert_called_once_with("texto", "-¿qué se decidió?", "es")
+
+    def test_ask_without_transcript_fails(self):
+        with mock.patch.object(summarizer, "ask_question") as fake:
+            code, _, err = self._run(["ask", "--question", "hola"], "   ")
+        self.assertEqual(code, 1)
+        self.assertIn("no hay transcripción", err)
+        fake.assert_not_called()
+
+    def test_ask_exception_is_reported(self):
+        with mock.patch.object(summarizer, "ask_question", side_effect=RuntimeError("boom")):
+            code, _, err = self._run(["ask", "--question", "hola"], "texto")
+        self.assertEqual(code, 1)
+        self.assertIn("boom", err)
 
 
 def _tone(seconds, amp=0.1, freq=220.0):

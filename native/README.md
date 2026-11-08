@@ -8,17 +8,51 @@ Versión nativa para macOS en SwiftUI, conviviendo con la app Python/PySide6 de 
 - [x] Captura de audio del sistema con ScreenCaptureKit en proceso (`SystemAudioCapture.swift`, port del helper `swift/SystemAudioCapture.swift`)
 - [x] Segmentador VAD por energía portado de Python (`AudioSegmenter.swift`, con tests)
 - [x] Logger TXT/JSONL compatible con Python (`TranscriptLogger.swift`)
-- [x] Interfaz mínima: iniciar/detener, nivel, lista de transcripciones
 - [x] **Transcripción real con WhisperKit** (CoreML en Apple Neural Engine, modelo `large-v3-v20240930_626MB` de Argmax OSS, vía SPM `argmax-oss-swift` ≥ 1.1.0)
 - [x] Selector de modelo en la UI, como en Python (`large-v3-turbo` recomendado → Small/Base/Tiny); se descarga solo la primera vez y queda persistido
-- [x] Ventana siempre encima + modo compacto PiP (340×130)
-- [ ] Subtítulos flotantes (PiP), bandeja, atajos, ajustes persistentes
-- [ ] Resumen local (Foundation Models o MLX Swift)
+- [x] Filtro de alucinaciones de Whisper y limpieza de tokens especiales (`TextFormatting.swift`, port de `is_bad_transcript`)
+- [x] Interfaz de lectura: barra superior de una sola línea, transcripción a la izquierda y **Resumen IA** + **Preguntas** apilados a la derecha (paneles redimensionables)
+- [x] Ajustes en un popover (⚙), subtítulos flotantes arrastrables, modo compacto, ventana siempre encima, atajos en el menú *Sesión*
+- [x] Resumen y preguntas con Qwen local vía `summarizer.py` (puente Python, sin rutas fijas)
+- [ ] Micrófono como fuente (hoy solo audio del sistema)
+- [ ] Contexto/vocabulario para WhisperKit (`promptTokens`)
+- [ ] Resumen 100 % nativo (Foundation Models o MLX Swift) y proceso Python persistente
 - [ ] Bundle `.app` firmado/notarizado + DMG
+
+## Interfaz
+
+```
+┌ ● Escuchando  00:12:34 ▮▮▮▯▯   ·   Large v3 Turbo · EN  [■ Detener] [⏸] │ CC ⧉ ⋯ ⚙ ┐
+├──────────────────────────────────────┬───────────────────────────────────┤
+│ Transcripción          🔍 Filtrar A- A+│ ✨ Resumen IA        Actualizado ↻ │
+│                                      │                                   │
+│  10:02:11 EN                         ├───────────────────────────────────┤
+│  Texto grande y seleccionable…       │ ? Preguntas                       │
+│                                      │  ¿Qué se decidió? → respuesta     │
+│                                      │  [Pregunta algo…            ➤]    │
+└──────────────────────────────────────┴───────────────────────────────────┘
+```
+
+Atajos: ⌘↩ iniciar/detener · ⌘⇧P pausar · ⌘S guardar TXT · ⌘⇧C copiar · ⌘R actualizar resumen · ⌘F filtrar · ⌘+ / ⌘- tamaño de letra.
+
+## Resumen y preguntas (puente Python)
+
+El resumen y las preguntas usan el modelo Qwen de la app Python. La app nativa ejecuta
+`.venv/bin/python summarizer.py summary|ask` y le pasa la transcripción por stdin.
+Busca la raíz del repo en este orden:
+
+1. Variable de entorno `VOICELOGGER_ROOT`
+2. `defaults write VoiceLoggerMacNative python_root /ruta/al/repo`
+3. Subiendo desde el directorio actual y desde el ejecutable (`swift run` dentro de `native/` la encuentra sola)
+4. `~/Desktop/VoiceLoggerMac` y `~/VoiceLoggerMac`
+
+Necesita haber ejecutado `./setup.sh` en la raíz (crea `.venv` con `mlx-lm`).
 
 ### Prueba real (sin datos personales)
 
 Audio sintético TTS de 13 s, M3 Pro, modelo descargado la primera vez (~3 min) y en caché después (~5 s por proceso):
+
+> El modo `--transcribe` usado en esta prueba no está en el código actual de la app.
 
 ```bash
 cd native

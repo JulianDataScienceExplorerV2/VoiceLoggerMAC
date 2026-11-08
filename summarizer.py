@@ -1,3 +1,4 @@
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -8,6 +9,8 @@ SUMMARY_MODEL = "mlx-community/Qwen2.5-1.5B-Instruct-4bit"
 SINGLE_PASS_CHARS = 12000
 CHUNK_CHARS = 8000
 MAX_NOTES_CHARS = 9000
+# Preguntas: se manda la parte más reciente de la reunión (~6-8k tokens).
+QA_MAX_CHARS = 24000
 
 _lock = threading.Lock()
 _model = None
@@ -151,8 +154,18 @@ def get_last_error():
     return _last_error
 
 
-def ask_question(text, question, language="es"):
-    _ensure_model()
+def _tail_text(text, max_chars):
+    """Se queda con lo más reciente sin partir la primera línea."""
+    if len(text) <= max_chars:
+        return text
+    tail = text[-max_chars:]
+    newline = tail.find("\n")
+    if 0 <= newline < len(tail) - 1:
+        tail = tail[newline + 1:]
+    return "(… transcripción recortada: solo la parte más reciente …)\n" + tail
+
+
+def _ask_blocking(text, question, language):
     lang_name = "español" if language == "es" else "English"
     system = (
         f"Eres un asistente de reuniones. Responde SIEMPRE en {lang_name}. "
@@ -162,6 +175,77 @@ def ask_question(text, question, language="es"):
         "Transcripción de la reunión:\n"
         f"{text}\n\n"
         f"Pregunta: {question}\n"
-        "Responde de forma concisa y útil."
+        "Responde de forma concisa y útil. Si la respuesta no aparece en la "
+        "transcripción, dilo claramente en vez de inventarla."
     )
     return _generate(system, user, max_tokens=400, temp=0.2)
+
+
+def _run_question(text, question, language):
+    _ensure_model()
+    return _ask_blocking(text, question, language)
+
+
+def ask_question(text, question, language="es"):
+    """Responde una pregunta sobre la transcripción. Lanza excepción si falla.
+
+    Pasa por el mismo hilo que el resumen (MLX asocia sus streams al hilo
+    que cargó el modelo) y recorta reuniones muy largas para no exceder el
+    contexto del modelo.
+    """
+    text = _tail_text((text or "").strip(), QA_MAX_CHARS)
+    return _executor.submit(_run_question, text, question, language).result()
+
+
+def main(argv=None, stdin=None, stdout=None, stderr=None):
+    """CLI usada por la app nativa (Swift). La transcripción llega por stdin.
+
+        python summarizer.py summary --lang es < transcripcion.txt
+        python summarizer.py ask --lang es --question "¿Qué se decidió?" < transcripcion.txt
+
+    Escribe el resultado en stdout; ante un error escribe el motivo en stderr
+    y termina con código 1.
+    """
+    import argparse
+
+    stdin = stdin or sys.stdin
+    stdout = stdout or sys.stdout
+    stderr = stderr or sys.stderr
+
+    parser = argparse.ArgumentParser(
+        prog="summarizer.py", description="Resumen y preguntas locales con Qwen (mlx-lm)."
+    )
+    commands = parser.add_subparsers(dest="command", required=True)
+    summary = commands.add_parser("summary", help="acta de la reunión en Markdown")
+    summary.add_argument("--lang", choices=("es", "en"), default="es")
+    ask = commands.add_parser("ask", help="responde una pregunta sobre la reunión")
+    ask.add_argument("--lang", choices=("es", "en"), default="es")
+    ask.add_argument("--question", required=True)
+    args = parser.parse_args(argv)
+
+    text = stdin.read()
+    if args.command == "summary":
+        result, error = build_summary(text, args.lang)
+    else:
+        result, error = "", None
+        question = args.question.strip()
+        if not text.strip():
+            error = "no hay transcripción sobre la que preguntar"
+        elif not question:
+            error = "la pregunta está vacía"
+        else:
+            try:
+                result = ask_question(text, question, args.lang)
+            except Exception as exc:
+                error = f"no se pudo responder: {exc}"
+
+    result = (result or "").strip()
+    if error or not result:
+        stderr.write((error or "el modelo no devolvió texto") + "\n")
+        return 1
+    stdout.write(result + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
