@@ -40,7 +40,7 @@ struct AIPreempted: LocalizedError {
 /// few thousand tokens, so it saves little memory, and quantized attention
 /// is likely what made long prompts slow to start.)
 ///
-/// Memory: prompt prefill in 512-token steps, MLX buffer cache capped at
+/// Memory: prompt prefill in 2048-token steps, MLX buffer cache capped at
 /// 512 MB and emptied after each answer (as in `summarizer.py`).
 actor LocalLLM {
     struct Failure: LocalizedError {
@@ -48,7 +48,12 @@ actor LocalLLM {
         var errorDescription: String? { message }
     }
 
-    static let prefillStep = 512
+    /// Tokens read per step when the prompt is read ("prefill"). It was 512
+    /// (as in summarizer.py, for 16 GB Macs); the session log showed long
+    /// prompts (~3500 tokens) read at ~460 tok/s, ~8 s before the first word.
+    /// Bigger steps use the GPU better (mlx-lm's own default is 2048), at the
+    /// cost of a short memory peak while reading.
+    static let prefillStep = 2048
     static let cacheLimitBytes = 512 * 1024 * 1024
     static let repetitionPenalty: Float = 1.1
     static let repetitionContext = 64

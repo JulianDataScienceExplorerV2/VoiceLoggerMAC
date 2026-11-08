@@ -377,6 +377,123 @@ enum WebSearch {
         return parseWikipedia(try await fetch(components.url!), limit: limit)
     }
 
+    // MARK: Direct developer sources (JSON APIs, no captcha, no key)
+
+    /// Developer topics are searched straight in the official APIs instead of
+    /// `site:` searches on DuckDuckGo: MDN's search API for frontend, the Stack
+    /// Exchange API (questions with their accepted answers) for backend. Like
+    /// Wikipedia, they answer in JSON and do not block apps.
+    enum DirectSource: String, Sendable {
+        case mdn = "developer.mozilla.org"
+        case stackOverflow = "stackoverflow.com"
+    }
+
+    static let directResults = 3
+
+    /// Words to search for: without stopwords or accents ("¿Cómo uso useEffect en React?" → "uso useeffect react").
+    static func keywords(_ query: String) -> String {
+        MeetingMemoryStore.tokenize(query).prefix(8).joined(separator: " ")
+    }
+
+    static func parseMDN(_ json: Data, limit: Int = directResults) -> [WebResult] {
+        guard let root = try? JSONSerialization.jsonObject(with: json) as? [String: Any],
+              let documents = root["documents"] as? [[String: Any]] else { return [] }
+        return documents.prefix(limit).compactMap { document in
+            guard let title = document["title"] as? String, !title.isEmpty,
+                  let path = document["mdn_url"] as? String, !path.isEmpty else { return nil }
+            let url = path.hasPrefix("http") ? path : "https://developer.mozilla.org" + path
+            let summary = collapse(unescape(document["summary"] as? String ?? ""))
+            return WebResult(title: "MDN: \(title)", url: url, snippet: String(summary.prefix(maxSnippetChars)))
+        }
+    }
+
+    /// Stack Overflow questions: (result, accepted answer id). Questions
+    /// without an answer are skipped; the question body is the snippet.
+    static func parseStackOverflowQuestions(_ json: Data, limit: Int = directResults) -> [(result: WebResult, accepted: Int?)] {
+        guard let root = try? JSONSerialization.jsonObject(with: json) as? [String: Any],
+              let items = root["items"] as? [[String: Any]] else { return [] }
+        var found: [(result: WebResult, accepted: Int?)] = []
+        for item in items {
+            guard let title = item["title"] as? String, let link = item["link"] as? String,
+                  (item["is_answered"] as? Bool) == true else { continue }
+            let score = item["score"] as? Int ?? 0
+            let body = cleanText(item["body"] as? String ?? "")
+            found.append((
+                WebResult(title: "Stack Overflow: \(unescape(title)) (\(score) votos)", url: link,
+                          snippet: String(body.prefix(maxSnippetChars))),
+                item["accepted_answer_id"] as? Int
+            ))
+            if found.count >= limit { break }
+        }
+        return found
+    }
+
+    /// Accepted answers by id → their text (the most relevant part).
+    static func parseStackOverflowAnswers(_ json: Data, query: String) -> [Int: String] {
+        guard let root = try? JSONSerialization.jsonObject(with: json) as? [String: Any],
+              let items = root["items"] as? [[String: Any]] else { return [:] }
+        var answers: [Int: String] = [:]
+        for item in items {
+            guard let id = item["answer_id"] as? Int, let body = item["body"] as? String else { continue }
+            let relevant = extractRelevantText(body, query: query)
+            let text = relevant.isEmpty ? String(cleanText(body).prefix(pageExcerptChars)) : relevant
+            if !text.isEmpty { answers[id] = "Respuesta aceptada:\n" + text }
+        }
+        return answers
+    }
+
+    private static func mdn(_ query: String) async throws -> [WebResult] {
+        var components = URLComponents(string: "https://developer.mozilla.org/api/v1/search")!
+        components.queryItems = [URLQueryItem(name: "q", value: query), URLQueryItem(name: "locale", value: "en-US")]
+        return parseMDN(try await fetch(components.url!))
+    }
+
+    private static func stackOverflow(_ query: String) async throws -> [WebResult] {
+        var components = URLComponents(string: "https://api.stackexchange.com/2.3/search/advanced")!
+        components.queryItems = [
+            "order": "desc", "sort": "relevance", "q": query, "site": "stackoverflow", "answers": "1",
+            "pagesize": "6", "filter": "withbody",
+        ].map { URLQueryItem(name: $0.key, value: $0.value) }
+        var found = parseStackOverflowQuestions(try await fetch(components.url!))
+        let ids = found.compactMap { $0.accepted }
+        guard !ids.isEmpty else { return found.map { $0.result } }
+        var answersURL = URLComponents(
+            string: "https://api.stackexchange.com/2.3/answers/" + ids.map(String.init).joined(separator: ";")
+        )!
+        answersURL.queryItems = [URLQueryItem(name: "site", value: "stackoverflow"), URLQueryItem(name: "filter", value: "withbody")]
+        if let data = try? await fetch(answersURL.url!) {
+            let answers = parseStackOverflowAnswers(data, query: query)
+            for index in found.indices {
+                if let id = found[index].accepted, let text = answers[id] { found[index].result.content = text }
+            }
+        }
+        return found.map { $0.result }
+    }
+
+    /// The direct sources for these topics, in parallel; a failing one is skipped (and logged).
+    private static func directSearch(_ query: String, sources: [DirectSource]) async -> [WebResult] {
+        let words = keywords(query)
+        guard !sources.isEmpty, !words.isEmpty else { return [] }
+        return await withTaskGroup(of: (Int, [WebResult]).self) { group in
+            for (slot, source) in sources.enumerated() {
+                group.addTask {
+                    do {
+                        switch source {
+                        case .mdn: return (slot, try await mdn(words))
+                        case .stackOverflow: return (slot, try await stackOverflow(words))
+                        }
+                    } catch {
+                        SessionLog.shared.log("WEB", "\(source.rawValue) no respondió: \(error.localizedDescription)")
+                        return (slot, [])
+                    }
+                }
+            }
+            var bySlot: [Int: [WebResult]] = [:]
+            for await (slot, found) in group { bySlot[slot] = found }
+            return sources.indices.flatMap { bySlot[$0] ?? [] }
+        }
+    }
+
     private static func urlKey(_ url: String) -> String {
         var key = String(url.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first ?? "")
         while key.hasSuffix("/") { key.removeLast() }
@@ -550,7 +667,7 @@ enum WebSearch {
     /// that fail or take longer than the deadline keep their snippet.
     static func readPages(_ results: [WebResult], query: String, count: Int) async -> [WebResult] {
         var results = results
-        let targets = Array(results.indices.filter { isReadable(results[$0].url) }.prefix(count))
+        let targets = Array(results.indices.filter { results[$0].content == nil && isReadable(results[$0].url) }.prefix(count))
         guard !targets.isEmpty else { return results }
         let urls = targets.map { results[$0].url }
         await withTaskGroup(of: (Int, String?).self) { group in
@@ -589,13 +706,21 @@ enum WebSearch {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return [] }
         var siteList = parseSites(sites)
+        var direct: [DirectSource] = []
         if topics {
-            for site in topicSites(for: query) where siteList.count < maxSites && !siteList.contains(site) {
-                siteList.append(site)
+            for site in topicSites(for: query) {
+                if let source = DirectSource(rawValue: site) {
+                    direct.append(source)  // its own API instead of a site: search
+                } else if siteList.count < maxSites, !siteList.contains(site) {
+                    siteList.append(site)
+                }
             }
         }
+        // Results from the direct sources rank like preferred sites.
+        let rankSites = siteList + direct.map(\.rawValue)
         let (preferredQueries, generalQuery) = buildQueries(query, sites: siteList)
 
+        async let directFound = Self.directSearch(query, sources: direct)
         async let generalSearch: Result<[WebResult], Error> = Self.run(generalQuery)
         let preferred = await withTaskGroup(of: (Int, [WebResult]).self) { group in
             for (slot, preferredQuery) in preferredQueries.enumerated() {
@@ -617,7 +742,7 @@ enum WebSearch {
             case .failure(let error): failure = error
             }
         }
-        var results = rank(preferred + general.prefix(candidates), sites: siteList)
+        var results = rank(await directFound + preferred + general.prefix(candidates), sites: rankSites)
 
         if results.count < 2 {
             do {
@@ -628,7 +753,7 @@ enum WebSearch {
                 if found.isEmpty, !keywords.isEmpty, keywords != query.lowercased() {
                     found = try await wikipedia(keywords, language: language, limit: limit)
                 }
-                results = rank(results + found, sites: siteList)
+                results = rank(results + found, sites: rankSites)
             } catch {
                 if results.isEmpty, failure != nil {
                     throw Failure(message: "No pude buscar en internet (\(error.localizedDescription)).")

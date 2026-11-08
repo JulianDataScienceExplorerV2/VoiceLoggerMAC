@@ -243,6 +243,10 @@ modelo pequeño pueden fallar: revisa las fuentes.
 
 ### Calidad de la búsqueda (modo Ideas y Ampliar con internet)
 
+- **Fuentes directas de desarrollo** (motor Swift): las preguntas de frontend se buscan en la **API de búsqueda de
+  MDN** y las de backend en la **API de Stack Exchange** (Stack Overflow: preguntas con su **respuesta aceptada**,
+  ~300 consultas al día sin clave). Son APIs JSON oficiales, como Wikipedia: no piden verificación anti-bots ni
+  dependen de DuckDuckGo. Sus resultados van primero, como los sitios preferidos.
 - **Si DuckDuckGo falla** (no responde o pide verificación anti-bots), durante 2 minutos se busca directo en
   Wikipedia en vez de esperar 8 s a que se venza el tiempo en cada pregunta; si Wikipedia no encuentra nada con la
   pregunta completa, se reintenta con sus palabras clave. Queda anotado en el log de la sesión.
@@ -304,7 +308,8 @@ tamaños y conteos, así se puede compartir para depurar.
   vivo, preguntas cada pocos segundos, respuestas Reunión/Ideas en dos pasos, «Ampliar con internet» (`site:`,
   fuentes confiables, lectura de páginas), tareas y memoria en disco (mismo formato de archivo).
   - Usa **los mismos modelos y la misma caché** (`~/.cache/huggingface/hub`): no vuelve a descargarlos.
-  - Una generación a la vez (como el hilo único de Python), caché de MLX limitada a 512 MB y vaciada tras cada
+  - El prompt se lee en trozos de 2048 tokens (antes 512: en un M3 Pro leía ~460 tok/s, ~8 s antes de la
+    primera palabra con prompts de ~3500 tokens). Una generación a la vez, caché de MLX limitada a 512 MB y vaciada tras cada
     respuesta, y el modelo se libera tras 10 min sin uso.
   - **Optimizaciones que el motor Python no tiene:**
     1. **Respuesta en vivo:** el texto aparece mientras se escribe («Escribiendo…»), también el complemento de

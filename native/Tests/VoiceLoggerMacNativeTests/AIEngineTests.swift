@@ -224,4 +224,49 @@ final class AIEngineTests: XCTestCase {
         let sources = AIText.sources([WebResult(title: "Wiki", url: "u", snippet: "", trusted: true, content: "x")])
         XCTAssertEqual(sources, [WebSource(title: "Wiki", url: "u", trusted: true, read: true)])
     }
+
+    // MARK: Direct developer sources
+
+    func testDirectSourcesByTopic() {
+        XCTAssertEqual(WebSearch.DirectSource(rawValue: "developer.mozilla.org"), .mdn)
+        XCTAssertEqual(WebSearch.DirectSource(rawValue: "stackoverflow.com"), .stackOverflow)
+        XCTAssertNil(WebSearch.DirectSource(rawValue: "thinkwithgoogle.com"))  // still a site: search
+        XCTAssertEqual(WebSearch.keywords("¿Cómo uso useEffect en React?"), "uso useeffect react")
+    }
+
+    func testParseMDN() {
+        let json = """
+            {"documents": [
+              {"mdn_url": "/en-US/docs/Web/API/Fetch_API", "title": "Fetch API",
+               "summary": "The Fetch API provides an interface for fetching resources &amp; more.", "score": 10},
+              {"mdn_url": "", "title": "Broken"}
+            ]}
+            """
+        let results = WebSearch.parseMDN(Data(json.utf8))
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results.first?.title, "MDN: Fetch API")
+        XCTAssertEqual(results.first?.url, "https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API")
+        XCTAssertEqual(results.first?.snippet, "The Fetch API provides an interface for fetching resources & more.")
+    }
+
+    func testParseStackOverflowQuestionsAndAcceptedAnswers() {
+        let questions = """
+            {"items": [
+              {"title": "How to use useEffect &amp; cleanup?", "link": "https://stackoverflow.com/q/1", "score": 42,
+               "is_answered": true, "accepted_answer_id": 11, "body": "<p>I want to <b>clean up</b>.</p>"},
+              {"title": "Unanswered", "link": "https://stackoverflow.com/q/2", "is_answered": false}
+            ]}
+            """
+        let found = WebSearch.parseStackOverflowQuestions(Data(questions.utf8))
+        XCTAssertEqual(found.count, 1)
+        XCTAssertEqual(found.first?.result.title, "Stack Overflow: How to use useEffect & cleanup? (42 votos)")
+        XCTAssertEqual(found.first?.result.snippet, "I want to clean up.")
+        XCTAssertEqual(found.first?.accepted, 11)
+
+        let answers = """
+            {"items": [{"answer_id": 11, "body": "<p>Return a cleanup function from useEffect so React runs it before the component unmounts or the effect runs again.</p><pre><code>useEffect(() =&gt; { return () =&gt; {} })</code></pre>"}]}
+            """
+        let texts = WebSearch.parseStackOverflowAnswers(Data(answers.utf8), query: "useEffect cleanup react")
+        XCTAssertTrue(texts[11]?.hasPrefix("Respuesta aceptada:\nReturn a cleanup function from useEffect") ?? false)
+    }
 }
