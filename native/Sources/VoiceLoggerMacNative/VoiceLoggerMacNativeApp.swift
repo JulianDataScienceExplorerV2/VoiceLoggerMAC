@@ -93,6 +93,8 @@ final class AppState: ObservableObject {
     /// Language of AI answers (summary, key questions, Q&A). English for now.
     @Published var summaryLang = "en" { didSet { save() } }
     @Published var autoSummary = true { didSet { save() } }
+    /// Detailed answers (default) or short ones, for the Questions panel.
+    @Published var longAnswers = true { didSet { save() } }
     /// Seconds between live summary updates (counted from the end of the previous one).
     @Published var liveInterval = 30 { didSet { save() } }
     @Published var qwenModel = QwenModels.default {
@@ -647,6 +649,7 @@ final class AppState: ObservableObject {
         let lang = summaryLang
         let context = String(text.suffix(Self.questionChars))
         let notes = liveMarkdown
+        let detail = longAnswers ? "long" : "short"
         let session = currentSession()
         let directory = memoryDirectory.path
         Task {
@@ -655,7 +658,7 @@ final class AppState: ObservableObject {
             do {
                 answer = try await server.ask(
                     question: question, text: context, notes: notes,
-                    session: session, memoryDir: directory, lang: lang
+                    session: session, memoryDir: directory, lang: lang, detail: detail
                 )
                 failed = false
             } catch {
@@ -871,6 +874,7 @@ final class AppState: ObservableObject {
         d.set(autoSummary, forKey: "auto_summary")
         d.set(liveInterval, forKey: "live_interval")
         d.set(qwenModel, forKey: "qwen_model")
+        d.set(longAnswers, forKey: "long_answers")
         d.set(uiScale, forKey: "ui_scale")
         d.set(transcriptFontSize, forKey: "font_size")
         d.set(alwaysOnTop, forKey: "always_on_top")
@@ -891,6 +895,7 @@ final class AppState: ObservableObject {
         autoSummary = d.object(forKey: "auto_summary") as? Bool ?? true
         liveInterval = d.object(forKey: "live_interval") as? Int ?? 30
         qwenModel = d.string(forKey: "qwen_model") ?? QwenModels.default
+        longAnswers = d.object(forKey: "long_answers") as? Bool ?? true
         uiScale = d.object(forKey: "ui_scale") as? Double ?? 1.15
         transcriptFontSize = max(12, min(28, d.object(forKey: "font_size") as? Int ?? 17))
         alwaysOnTop = d.object(forKey: "always_on_top") as? Bool ?? true
@@ -1606,13 +1611,23 @@ struct FullView: View {
 
     private var questionsPanel: some View {
         Panel(title: "Preguntas", systemImage: "questionmark.bubble", tint: Theme.qa) {
-            if !state.qaItems.isEmpty {
-                Button("Borrar") {
-                    state.qaItems.removeAll()
+            HStack(spacing: 10) {
+                Picker("Respuestas", selection: $state.longAnswers) {
+                    Text("Corta").tag(false)
+                    Text("Larga").tag(true)
                 }
-                .buttonStyle(.plain)
-                .scaledFont(11)
-                .foregroundStyle(.secondary)
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                .help("Larga: explica contexto, decisiones y próximos pasos. Corta: 2-4 frases.")
+                if !state.qaItems.isEmpty {
+                    Button("Borrar") {
+                        state.qaItems.removeAll()
+                    }
+                    .buttonStyle(.plain)
+                    .scaledFont(11)
+                    .foregroundStyle(.secondary)
+                }
             }
         } content: {
             VStack(spacing: 0) {
@@ -1774,6 +1789,7 @@ struct SettingsPopover: View {
                     Text("Inglés").tag("en")
                     Text("Español").tag("es")
                 }
+                Toggle("Respuestas largas y detalladas", isOn: $state.longAnswers)
                 Toggle("Resumen y preguntas clave en vivo", isOn: $state.autoSummary)
                 Picker("Actualizar cada", selection: $state.liveInterval) {
                     Text("15 s").tag(15)
@@ -1979,6 +1995,7 @@ struct SessionCommands: Commands {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        AppIcon.apply()
         NSApp.activate(ignoringOtherApps: true)
         NSApp.windows.first(where: { $0.styleMask.contains(.titled) })?.makeKeyAndOrderFront(nil)
     }

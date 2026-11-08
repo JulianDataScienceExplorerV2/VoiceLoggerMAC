@@ -103,7 +103,7 @@ class CliTests(unittest.TestCase):
         with mock.patch.object(summarizer, "ask_question", return_value="Respuesta") as fake:
             code, out, _ = self._run(["ask", "--lang", "es", "--question=-¿qué se decidió?"], "texto")
         self.assertEqual((code, out), (0, "Respuesta\n"))
-        fake.assert_called_once_with("texto", "-¿qué se decidió?", "es")
+        fake.assert_called_once_with("texto", "-¿qué se decidió?", "es", detail="long")
 
     def test_ask_without_transcript_fails(self):
         with mock.patch.object(summarizer, "ask_question") as fake:
@@ -243,7 +243,39 @@ class AskWithNotesTests(unittest.TestCase):
     def test_serve_forwards_notes(self):
         with mock.patch.object(summarizer, "ask_question", return_value="42") as fake:
             summarizer.handle_request({"type": "ask", "text": "t", "question": "q", "lang": "en", "notes": "n"})
-        fake.assert_called_once_with("t", "q", "en", "n", "")
+        fake.assert_called_once_with("t", "q", "en", "n", "", detail="long")
+
+
+class AnswerDetailTests(unittest.TestCase):
+    def _prompt_and_tokens(self, **kwargs):
+        with mock.patch.object(summarizer, "_generate", return_value="ok") as fake, \
+                mock.patch.object(summarizer, "load_context", return_value=""):
+            summarizer._ask_blocking("[10:00] hi", "Who?", "en", **kwargs)
+        return fake.call_args[0][1], fake.call_args[1]["max_tokens"]
+
+    def test_long_is_default_and_elaborate(self):
+        prompt, tokens = self._prompt_and_tokens()
+        self.assertIn("thorough, well-organized answer", prompt)
+        self.assertEqual(tokens, 700)
+
+    def test_short_answers(self):
+        prompt, tokens = self._prompt_and_tokens(detail="short")
+        self.assertIn("Answer concisely (2-4 sentences)", prompt)
+        self.assertEqual(tokens, 300)
+
+    def test_unknown_detail_falls_back_to_long(self):
+        self.assertEqual(self._prompt_and_tokens(detail="weird")[1], 700)
+
+    def test_serve_forwards_detail(self):
+        with mock.patch.object(summarizer, "ask_question", return_value="x") as fake:
+            summarizer.handle_request({"type": "ask", "text": "t", "question": "q", "lang": "es", "detail": "short"})
+        self.assertEqual(fake.call_args[1], {"detail": "short"})
+
+    def test_cli_detail_flag(self):
+        with mock.patch.object(summarizer, "ask_question", return_value="x") as fake:
+            summarizer.main(["ask", "--question", "q", "--detail", "short"], stdin=io.StringIO("texto"),
+                            stdout=io.StringIO(), stderr=io.StringIO())
+        self.assertEqual(fake.call_args[1], {"detail": "short"})
 
 
 class FitTokensTests(unittest.TestCase):

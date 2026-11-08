@@ -117,9 +117,16 @@ PROMPTS = {
             "recent": "Most recent part of the transcript:",
             "transcript": "Meeting transcript:",
             "question": "Question:",
-            "instruction": (
-                "Answer concisely and usefully using only this information. If the answer "
+            "instruction_short": (
+                "Answer concisely (2-4 sentences) using only this information. If the answer "
                 "is not there, say so clearly instead of making it up."
+            ),
+            "instruction_long": (
+                "Give a thorough, well-organized answer using only this information: explain the "
+                "context, what was said (and by whom, if known), any decisions, numbers or dates, "
+                "and the open points or next steps. Use short paragraphs or bullet points "
+                "(about 150-300 words). If the answer is not there, say so clearly instead of "
+                "making it up."
             ),
         },
         "trimmed": "(… transcript trimmed: only the most recent part …)",
@@ -162,9 +169,15 @@ PROMPTS = {
             "recent": "Parte más reciente de la transcripción:",
             "transcript": "Transcripción de la reunión:",
             "question": "Pregunta:",
-            "instruction": (
-                "Responde de forma concisa y útil usando solo esta información. Si la "
+            "instruction_short": (
+                "Responde de forma concisa (2-4 frases) usando solo esta información. Si la "
                 "respuesta no aparece, dilo claramente en vez de inventarla."
+            ),
+            "instruction_long": (
+                "Da una respuesta completa y bien organizada usando solo esta información: explica "
+                "el contexto, qué se dijo (y quién, si se sabe), las decisiones, cifras o fechas, y "
+                "los puntos abiertos o próximos pasos. Usa párrafos cortos o viñetas (unas 150-300 "
+                "palabras). Si la respuesta no aparece, dilo claramente en vez de inventarla."
             ),
         },
         "trimmed": "(… transcripción recortada: solo la parte más reciente …)",
@@ -505,7 +518,11 @@ def live_insights(text="", new_text="", previous="", language="en"):
 
 # ---------- Preguntas ----------
 
-def _ask_blocking(text, question, language, notes="", memory=""):
+# Respuestas: "long" (por defecto) explica con detalle; "short" va al grano.
+ANSWER_MAX_TOKENS = {"long": 700, "short": 300}
+
+
+def _ask_blocking(text, question, language, notes="", memory="", detail="long"):
     labels = _prompts(language)["ask"]
     notes = fit_tokens(notes, QA_NOTES_TOKENS, keep="head")
     memory = fit_tokens(memory, QA_MEMORY_TOKENS, keep="head")
@@ -516,16 +533,19 @@ def _ask_blocking(text, question, language, notes="", memory=""):
     if memory:
         blocks.append(f"{labels['memory']}\n{memory}")
     blocks.append(f"{labels['recent'] if (notes or memory) else labels['transcript']}\n{text}")
-    blocks.append(f"{labels['question']} {question}\n{labels['instruction']}")
-    return _generate(_system_prompt(language), "\n\n".join(blocks), max_tokens=400, temp=0.2)
+    detail = detail if detail in ANSWER_MAX_TOKENS else "long"
+    blocks.append(f"{labels['question']} {question}\n{labels['instruction_' + detail]}")
+    return _generate(
+        _system_prompt(language), "\n\n".join(blocks), max_tokens=ANSWER_MAX_TOKENS[detail], temp=0.2
+    )
 
 
-def _run_question(text, question, language, notes="", memory=""):
+def _run_question(text, question, language, notes="", memory="", detail="long"):
     _ensure_model()
-    return _ask_blocking(text, question, language, notes, memory)
+    return _ask_blocking(text, question, language, notes, memory, detail)
 
 
-def ask_question(text, question, language="es", notes="", memory=""):
+def ask_question(text, question, language="es", notes="", memory="", detail="long"):
     """Responde una pregunta sobre la reunión. Lanza excepción si falla.
 
     ``notes`` (resumen en vivo) y ``memory`` (fragmentos antiguos relevantes,
@@ -535,7 +555,9 @@ def ask_question(text, question, language="es", notes="", memory=""):
     cargó el modelo).
     """
     text = _tail_text((text or "").strip(), QA_MAX_CHARS, language)
-    return _executor.submit(_run_question, text, question, language, notes or "", memory or "").result()
+    return _executor.submit(
+        _run_question, text, question, language, notes or "", memory or "", detail or "long"
+    ).result()
 
 
 def recall(memory_dir, session, question, recent_text):
@@ -573,7 +595,9 @@ def handle_request(request):
         if not text.strip():
             raise ValueError("no transcript to answer from yet")
         memory = recall(request.get("memory_dir"), request.get("session"), question, text)
-        answer = ask_question(text, question, language, request.get("notes") or "", memory)
+        answer = ask_question(
+            text, question, language, request.get("notes") or "", memory, detail=request.get("detail") or "long"
+        )
         return {"answer": answer, "used_memory": bool(memory)}
     if kind == "remember":
         from meeting_memory import MeetingMemory
@@ -663,6 +687,7 @@ def main(argv=None, stdin=None, stdout=None, stderr=None):
     ask = commands.add_parser("ask", help="responde una pregunta sobre la reunión")
     ask.add_argument("--lang", choices=("es", "en"), default="en")
     ask.add_argument("--question", required=True)
+    ask.add_argument("--detail", choices=("long", "short"), default="long")
     args = parser.parse_args(argv)
 
     if args.command == "serve":
@@ -680,7 +705,7 @@ def main(argv=None, stdin=None, stdout=None, stderr=None):
             error = "la pregunta está vacía"
         else:
             try:
-                result = ask_question(text, question, args.lang)
+                result = ask_question(text, question, args.lang, detail=args.detail)
             except Exception as exc:
                 error = f"no se pudo responder: {exc}"
 

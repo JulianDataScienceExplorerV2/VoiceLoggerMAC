@@ -90,10 +90,11 @@ actor QwenServer {
 
     /// `notes` (the live summary) and the meeting memory on disk (`session`
     /// in `memoryDir`) cover what no longer fits in `text`.
-    func ask(question: String, text: String, notes: String, session: String, memoryDir: String, lang: String) async throws -> String {
+    /// `detail`: "long" (thorough, default) or "short" (2-4 sentences).
+    func ask(question: String, text: String, notes: String, session: String, memoryDir: String, lang: String, detail: String) async throws -> String {
         let data = try await send([
             "type": "ask", "question": question, "text": text, "notes": notes,
-            "session": session, "memory_dir": memoryDir, "lang": lang,
+            "session": session, "memory_dir": memoryDir, "lang": lang, "detail": detail,
         ])
         return try JSONDecoder().decode(Envelope<Answer>.self, from: data).result.answer
             .trimmingCharacters(in: .whitespacesAndNewlines)

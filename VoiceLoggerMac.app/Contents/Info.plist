@@ -17,7 +17,7 @@
     <key>CFBundleExecutable</key>
     <string>VoiceLoggerMac</string>
     <key>CFBundleIconFile</key>
-    <string></string>
+    <string>AppIcon</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>NSHighResolutionCapable</key>

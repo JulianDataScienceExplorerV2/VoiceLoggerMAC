@@ -8,7 +8,7 @@ from collections import deque
 from datetime import datetime
 
 from PySide6.QtCore import Qt, Signal, Slot, QSettings, QThread, QTimer, QUrl, QRectF
-from PySide6.QtGui import QColor, QDesktopServices, QKeySequence, QPainter, QShortcut
+from PySide6.QtGui import QColor, QDesktopServices, QIcon, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -857,8 +857,11 @@ class VoiceLoggerWindow(QMainWindow):
 
     def setup_tray_icon(self):
         self.tray_icon = QSystemTrayIcon(self)
+        app_icon = QApplication.windowIcon()
         self.tray_icon.setIcon(
-            self.style().standardIcon(self.style().StandardPixmap.SP_MediaVolume)
+            app_icon
+            if not app_icon.isNull()
+            else self.style().standardIcon(self.style().StandardPixmap.SP_MediaVolume)
         )
         self.tray_icon.setToolTip("VoiceLogger Mac")
         tray_menu = QMenu()
@@ -1608,6 +1611,9 @@ def run_app():
     app.setApplicationName("VoiceLogger Mac")
     app.setApplicationDisplayName("VoiceLogger Mac")
     app.setStyle("Fusion")  # render consistente con las hojas de estilo oscuras
+    icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "AppIcon.png")
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
     app.setQuitOnLastWindowClosed(True)
     window = VoiceLoggerWindow()
     window.show()
