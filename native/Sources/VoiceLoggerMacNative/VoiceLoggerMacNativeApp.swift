@@ -21,13 +21,14 @@ struct QAItem: Identifiable, Equatable {
 }
 
 /// Qwen models for the summary / questions (MLX 4-bit, downloaded once to the
-/// Hugging Face cache). Sizes are approximate download sizes.
+/// Hugging Face cache). Sizes are approximate download sizes. Only models that
+/// answer directly: "thinking" models (e.g. Qwen3.5) reason before answering,
+/// which makes live summaries and answers slower.
 enum QwenModels {
     static let `default` = "mlx-community/Qwen2.5-1.5B-Instruct-4bit"
     static let choices: [(label: String, id: String)] = [
         ("Qwen2.5 1.5B · ligero, ~0.9 GB (actual)", "mlx-community/Qwen2.5-1.5B-Instruct-4bit"),
         ("Qwen3 4B 2507 · mejor calidad, ~2.3 GB (bien con 16 GB)", "mlx-community/Qwen3-4B-Instruct-2507-4bit"),
-        ("Qwen3.5 4B · el más nuevo, ~3 GB (experimental)", "mlx-community/Qwen3.5-4B-MLX-4bit"),
     ]
 }
 
@@ -1158,7 +1159,9 @@ final class AppState: ObservableObject {
         summaryLang = d.string(forKey: "ai_lang") ?? "en"
         autoSummary = d.object(forKey: "auto_summary") as? Bool ?? true
         liveInterval = d.object(forKey: "live_interval") as? Int ?? 30
-        qwenModel = d.string(forKey: "qwen_model") ?? QwenModels.default
+        // A model that is no longer offered (e.g. the removed Qwen3.5) falls back to the default.
+        let savedModel = d.string(forKey: "qwen_model") ?? QwenModels.default
+        qwenModel = QwenModels.choices.contains(where: { $0.id == savedModel }) ? savedModel : QwenModels.default
         longAnswers = d.object(forKey: "long_answers") as? Bool ?? true
         liveSpeed = d.string(forKey: "live_speed") ?? "normal"
         askTasksOnStop = d.object(forKey: "ask_tasks_on_stop") as? Bool ?? true

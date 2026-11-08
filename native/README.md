@@ -66,9 +66,9 @@ botones y ajustes; *Letra de lectura* (A- / A+) agranda transcripción, resumen 
   |---|---|---|---|
   | Qwen2.5 1.5B (por defecto) | `mlx-community/Qwen2.5-1.5B-Instruct-4bit` | ~0.9 GB | ligero, rápido |
   | Qwen3 4B 2507 | `mlx-community/Qwen3-4B-Instruct-2507-4bit` | ~2.3 GB | mejor calidad, va bien con 16 GB |
-  | Qwen3.5 4B (experimental) | `mlx-community/Qwen3.5-4B-MLX-4bit` | ~3 GB | el más nuevo; necesita `mlx-lm` reciente |
 
-  Los modelos que "piensan" (Qwen3/3.5) se usan con el razonamiento apagado y se limpia cualquier `<think>`.
+  Solo modelos de respuesta directa (sin razonamiento previo) para que todo vaya rápido. Si usas uno que "piensa"
+  vía `VOICELOGGER_QWEN_MODEL`, la app le apaga el razonamiento y limpia cualquier `<think>`.
   Desde la terminal también vale `VOICELOGGER_QWEN_MODEL=<repo>`.
 
 ### Reuniones largas sin reventar la RAM
