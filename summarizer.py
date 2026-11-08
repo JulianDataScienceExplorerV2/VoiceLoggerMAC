@@ -90,6 +90,7 @@ def _minutes_prompt(text):
         "en formato Markdown con estas secciones exactas:\n"
         "## Resumen\n(2-3 frases)\n"
         "## Temas tratados\n(viñetas)\n"
+        "## Preguntas importantes\n(viñetas)\n"
         "## Decisiones\n(viñetas)\n"
         "## Tareas / pendientes\n(viñetas, con responsable si se menciona)\n\n"
         "Transcripción:\n"
@@ -148,3 +149,19 @@ def build_summary(text, language="es"):
 
 def get_last_error():
     return _last_error
+
+
+def ask_question(text, question, language="es"):
+    _ensure_model()
+    lang_name = "español" if language == "es" else "English"
+    system = (
+        f"Eres un asistente de reuniones. Responde SIEMPRE en {lang_name}. "
+        "Usa solo el contexto de la transcripción proporcionada."
+    )
+    user = (
+        "Transcripción de la reunión:\n"
+        f"{text}\n\n"
+        f"Pregunta: {question}\n"
+        "Responde de forma concisa y útil."
+    )
+    return _generate(system, user, max_tokens=400, temp=0.2)
