@@ -229,10 +229,6 @@ Planned improvements next:
 - **Python error in `setup.sh`** → run `uv python install 3.11` and try again.
 - **Voice not detected / too much noise** → raise/lower the VAD sensitivity in the GUI and try the "Voice clarity" filter with the microphone.
 
-## Screenshots
-
-![Live transcription](assets/screenshots/live.png)
-![Main window](assets/screenshots/main.png)
 
 ## License
 

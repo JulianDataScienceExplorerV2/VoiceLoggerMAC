@@ -229,10 +229,6 @@ Mejoras planificadas:
 - **Error de Python en `setup.sh`** → ejecuta `uv python install 3.11` y vuelve a intentarlo.
 - **No detecta la voz / entra ruido** → sube/baja la sensibilidad (VAD) en la GUI y prueba el filtro "Claridad de voz" con micrófono.
 
-## Screenshots
-
-![Live transcription](assets/screenshots/live.png)
-![Main window](assets/screenshots/main.png)
 
 ## Licencia
 
