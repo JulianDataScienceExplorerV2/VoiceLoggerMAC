@@ -6,6 +6,7 @@ import Foundation
 /// The repo root is located at runtime (no hardcoded user paths):
 /// 1. `VOICELOGGER_ROOT` environment variable
 /// 2. `python_root` in UserDefaults (`defaults write VoiceLoggerMacNative python_root /ruta`)
+///    and `VoiceLoggerRepoRoot` in the packaged app's Info.plist (native/package.sh)
 /// 3. walking up from the working directory and from the executable
 ///    (`swift run` inside `native/` finds the repo root this way)
 /// 4. a few usual clone locations in the home folder
@@ -30,6 +31,10 @@ struct PythonBridge: Sendable {
         }
         if let saved = UserDefaults.standard.string(forKey: "python_root"), !saved.isEmpty {
             candidates.append(URL(fileURLWithPath: saved, isDirectory: true))
+        }
+        // The packaged app (native/package.sh) records where the repo is.
+        if let packaged = Bundle.main.object(forInfoDictionaryKey: "VoiceLoggerRepoRoot") as? String, !packaged.isEmpty {
+            candidates.append(URL(fileURLWithPath: packaged, isDirectory: true))
         }
         let starts = [
             URL(fileURLWithPath: fm.currentDirectoryPath, isDirectory: true),

@@ -29,6 +29,8 @@ Requirements: macOS 15+, Apple Silicon, Xcode 16 (Swift 6). The AI side reuses t
 cd native && swift run
 ```
 
+To open it with a double click (no Terminal), with its icon and Reminders support: `native/package.sh --install` (or `--dmg` to share). When a meeting stops, the app offers to add the detected tasks to Apple Reminders, and ⋯ → *Export meeting (Markdown)* works with Obsidian/Notion.
+
 Details, shortcuts and model options: [native/README.md](native/README.md).
 
 <!-- Screenshots of the real app: capture the window (no shadow) and uncomment below.

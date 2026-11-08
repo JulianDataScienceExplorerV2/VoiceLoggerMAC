@@ -278,6 +278,47 @@ class AnswerDetailTests(unittest.TestCase):
         self.assertEqual(fake.call_args[1], {"detail": "short"})
 
 
+class TasksTests(unittest.TestCase):
+    def test_parse_tasks_formats(self):
+        raw = (
+            "- TASK | OWNER | DUE\n"
+            "- Fix the permissions copy | Julian | 2026-11-13\n"
+            "* [ ] Share the draft in the channel | - | -\n"
+            "2. Review pricing | Ana | next week\n"
+            "- Fix the permissions copy | Julian | 2026-11-13\n"
+            "- Send budget | Bob | 2026-02-30\n"
+        )
+        self.assertEqual(summarizer.parse_tasks(raw), [
+            {"title": "Fix the permissions copy", "owner": "Julian", "due": "2026-11-13"},
+            {"title": "Share the draft in the channel", "owner": "", "due": ""},
+            {"title": "Review pricing", "owner": "Ana", "due": ""},
+            {"title": "Send budget", "owner": "Bob", "due": ""},
+        ])
+
+    def test_parse_tasks_none(self):
+        for raw in ["- none", "- ninguna", "", "- (bullets)"]:
+            self.assertEqual(summarizer.parse_tasks(raw), [], raw)
+
+    def test_parse_tasks_limit(self):
+        raw = "\n".join(f"- Task {i} | - | -" for i in range(20))
+        self.assertEqual(len(summarizer.parse_tasks(raw)), summarizer.MAX_TASKS)
+
+    def test_tasks_request_uses_today_and_notes(self):
+        with mock.patch.object(summarizer, "_generate", return_value="- Ship it | Ana | 2026-11-14") as fake, \
+                mock.patch.object(summarizer, "load_context", return_value=""), \
+                mock.patch.object(summarizer, "_ensure_model"):
+            reply = summarizer.handle_request({"type": "tasks", "notes": "## Summary\nX", "text": "[10:00] ship",
+                                               "lang": "en", "today": "2026-11-08"})
+        self.assertEqual(reply, {"tasks": [{"title": "Ship it", "owner": "Ana", "due": "2026-11-14"}]})
+        prompt = fake.call_args[0][1]
+        self.assertIn("today is 2026-11-08", prompt)
+        self.assertIn("Notes of the meeting so far:\n## Summary\nX", prompt)
+
+    def test_tasks_without_text_fails(self):
+        with self.assertRaises(ValueError):
+            summarizer.extract_tasks("", "  ")
+
+
 class FitTokensTests(unittest.TestCase):
     def test_keeps_short_text(self):
         self.assertEqual(summarizer.fit_tokens("hola equipo", 100), "hola equipo")

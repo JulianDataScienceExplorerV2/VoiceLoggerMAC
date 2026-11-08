@@ -14,6 +14,7 @@ eso cada prompt tiene un presupuesto fijo de tokens, lo antiguo vive en disco
 (``meeting_memory``) y solo se trae lo relevante, el prefill va en pasos
 pequeños y Qwen se descarga tras un rato sin uso.
 """
+import datetime
 import gc
 import json
 import os
@@ -129,6 +130,14 @@ PROMPTS = {
                 "making it up."
             ),
         },
+        "tasks": (
+            "From the meeting notes and transcript below, list the action items: concrete things "
+            "someone has to do after the meeting. Write one per line in exactly this format:\n"
+            "- TASK | OWNER | DUE\n"
+            "TASK: short imperative sentence. OWNER: who is responsible, or - if not mentioned. "
+            "DUE: the deadline as YYYY-MM-DD if one was mentioned (today is {today}), or -.\n"
+            "Write at most 10 lines and nothing else. If there are no action items, write: - none"
+        ),
         "trimmed": "(… transcript trimmed: only the most recent part …)",
     },
     "es": {
@@ -180,6 +189,15 @@ PROMPTS = {
                 "palabras). Si la respuesta no aparece, dilo claramente en vez de inventarla."
             ),
         },
+        "tasks": (
+            "A partir de las notas y la transcripción de abajo, lista las tareas: cosas concretas "
+            "que alguien tiene que hacer después de la reunión. Escribe una por línea con este "
+            "formato exacto:\n"
+            "- TAREA | RESPONSABLE | FECHA\n"
+            "TAREA: frase corta en infinitivo. RESPONSABLE: quién la hace, o - si no se dijo. "
+            "FECHA: la fecha límite como AAAA-MM-DD si se mencionó (hoy es {today}), o -.\n"
+            "Escribe como máximo 10 líneas y nada más. Si no hay tareas, escribe: - ninguna"
+        ),
         "trimmed": "(… transcripción recortada: solo la parte más reciente …)",
     },
 }
@@ -575,6 +593,74 @@ def recall(memory_dir, session, question, recent_text):
     return "\n\n".join(f"[{h['start']} – {h['end']}]\n{h['text']}" for h in hits)
 
 
+# ---------- Tareas para Recordatorios ----------
+
+MAX_TASKS = 10
+TASKS_NOTES_TOKENS = 1000
+TASKS_RECENT_TOKENS = 2500
+_LIST_PREFIX_RE = re.compile(r"^(?:[-*•]|\d+[.)])\s*(?:\[[ xX]\]\s*)?")
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_NO_VALUE = {"", "-", "none", "n/a", "na", "unknown", "tbd", "ninguno", "ninguna", "nadie", "sin fecha"}
+
+
+def parse_tasks(raw, limit=MAX_TASKS):
+    """Convierte las líneas 'TAREA | RESPONSABLE | FECHA' del modelo en una lista limpia."""
+    tasks, seen = [], set()
+    for line in (raw or "").splitlines():
+        line = _LIST_PREFIX_RE.sub("", line.strip()).strip()
+        if not line:
+            continue
+        parts = [part.strip() for part in line.split("|")]
+        title = parts[0].strip(" .").strip()
+        if not title or _is_empty_item(title) or title.upper() in ("TASK", "TAREA"):
+            continue  # vacío, "- none" o la fila de cabecera repetida
+        owner = parts[1] if len(parts) > 1 else ""
+        owner = "" if owner.strip(" .").lower() in _NO_VALUE else owner
+        due = parts[2] if len(parts) > 2 else ""
+        if _DATE_RE.match(due):
+            try:
+                datetime.date.fromisoformat(due)
+            except ValueError:
+                due = ""
+        else:
+            due = ""
+        key = title.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        tasks.append({"title": title[:200], "owner": owner[:80], "due": due})
+        if len(tasks) >= limit:
+            break
+    return tasks
+
+
+def _tasks_blocking(notes, text, language, today):
+    labels = _prompts(language)["ask"]
+    blocks = [_prompts(language)["tasks"].format(today=today)]
+    notes = fit_tokens(notes, TASKS_NOTES_TOKENS, keep="head")
+    text = fit_tokens(text, TASKS_RECENT_TOKENS, keep="tail")
+    if notes:
+        blocks.append(f"{labels['notes']}\n{notes}")
+    if text:
+        blocks.append(f"{labels['recent'] if notes else labels['transcript']}\n{text}")
+    raw = _generate(_system_prompt(language), "\n\n".join(blocks), max_tokens=500, temp=0.1)
+    return parse_tasks(raw)
+
+
+def _run_tasks(notes, text, language, today):
+    _ensure_model()
+    return _tasks_blocking(notes, text, language, today)
+
+
+def extract_tasks(notes="", text="", language="en", today=None):
+    """Tareas de la reunión: [{"title", "owner", "due" (AAAA-MM-DD o "")}]."""
+    if not ((notes or "").strip() or (text or "").strip()):
+        raise ValueError("no transcript to extract tasks from yet")
+    today = today or datetime.date.today().isoformat()
+    text = _tail_text((text or "").strip(), QA_MAX_CHARS, language)
+    return _executor.submit(_run_tasks, notes or "", text, language, today).result()
+
+
 # ---------- Proceso persistente para la app nativa ----------
 
 def handle_request(request):
@@ -605,6 +691,8 @@ def handle_request(request):
         memory = MeetingMemory(request.get("memory_dir"), request.get("session"))
         stored = memory.add(int(request.get("index")), request.get("start"), request.get("end"), request.get("text"))
         return {"stored": stored, "segments": len(memory.segments())}
+    if kind == "tasks":
+        return {"tasks": extract_tasks(request.get("notes"), request.get("text"), language, request.get("today"))}
     if kind == "unload":
         return {"unloaded": _executor.submit(_unload_model).result()}
     if kind == "summary":

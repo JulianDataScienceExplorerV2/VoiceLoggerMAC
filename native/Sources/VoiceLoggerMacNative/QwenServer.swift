@@ -52,6 +52,10 @@ actor QwenServer {
         let answer: String
     }
 
+    private struct TasksPayload: Decodable {
+        let tasks: [MeetingTask]
+    }
+
     private let bridge: PythonBridge
     private let logURL: URL
     private var model: String
@@ -98,6 +102,12 @@ actor QwenServer {
         ])
         return try JSONDecoder().decode(Envelope<Answer>.self, from: data).result.answer
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Action items of the meeting (`today` = YYYY-MM-DD, to resolve "next Friday").
+    func tasks(notes: String, text: String, lang: String, today: String) async throws -> [MeetingTask] {
+        let data = try await send(["type": "tasks", "notes": notes, "text": text, "lang": lang, "today": today])
+        return try JSONDecoder().decode(Envelope<TasksPayload>.self, from: data).result.tasks
     }
 
     /// Stores a closed transcript fragment in the meeting memory on disk

@@ -128,6 +128,30 @@ cd native
 
 El modelo se descarga solo la primera vez desde Hugging Face (caché de WhisperKit). Puedes cambiarlo con `VOICELOGGER_MODEL=large-v3-v20240930_turbo`.
 
+## App de verdad (.app / DMG)
+
+Para abrirla con doble click (sin Terminal), con ícono en Finder y permisos propios:
+
+```bash
+native/package.sh             # → native/dist/VoiceLogger Mac.app
+native/package.sh --install   # además la copia a /Aplicaciones
+native/package.sh --dmg       # además native/dist/VoiceLoggerMac.dmg para compartir
+```
+
+- La IA sigue usando el `.venv` del repo: la app guarda dónde está el repo (no lo muevas o vuelve a empaquetar).
+- Firma ad-hoc por defecto: tras re-empaquetar, macOS puede volver a pedir el permiso de grabación de pantalla.
+  Con un certificado: `SIGN_IDENTITY="Developer ID Application: …" native/package.sh`.
+- La primera vez copia tus ajustes de `swift run`.
+
+## Tareas → Recordatorios y exportar
+
+- Al pulsar **Detener**, Qwen saca las tareas de la reunión (con responsable y fecha límite si se dijeron) y pregunta
+  *«Se detectaron N tareas… ¿agregarlas a Recordatorios?»*. Marcas/desmarcas y van a la lista **Reuniones**
+  (se crea sola). También: ⋯ → *Tareas → Recordatorios…* (⌘⇧T). Se puede apagar en ⚙.
+  Necesita la app empaquetada (macOS exige la descripción de permiso en el Info.plist); con `swift run` puedes copiarlas.
+- ⋯ → **Exportar reunión (Markdown)…** (⌘E): resumen, preguntas clave, tareas, preguntas y respuestas y transcripción.
+  Se abre tal cual en Obsidian y se importa en Notion.
+
 ## Ejecutar
 
 ```bash

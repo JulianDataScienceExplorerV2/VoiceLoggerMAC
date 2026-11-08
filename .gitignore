@@ -54,6 +54,8 @@ ENV/
 
 # Local build artifacts
 .build/
+native/dist/
+*.dmg
 *.o
 *.dylib
 *.a

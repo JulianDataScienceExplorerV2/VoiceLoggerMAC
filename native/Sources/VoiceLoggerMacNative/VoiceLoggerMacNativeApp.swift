@@ -122,6 +122,11 @@ final class AppState: ObservableObject {
             save()
         }
     }
+    /// When the meeting stops, extract its tasks and offer to add them to Reminders.
+    @Published var askTasksOnStop = true { didSet { save() } }
+    @Published var meetingTasks: [MeetingTask] = []
+    @Published var showTasksSheet = false
+    @Published var isExtractingTasks = false
     /// Show the "detected in the audio" questions (the X hides them).
     @Published var showKeyQuestions = true { didSet { save() } }
     /// Detailed answers (default) or short ones, for the Questions panel.
@@ -181,6 +186,9 @@ final class AppState: ObservableObject {
     private var segmentsSent = 0
     private var isRemembering = false
     private var isLoading = false
+    private lazy var reminders = RemindersExporter()
+    /// Reminders list that receives the meeting tasks.
+    static let remindersList = "Reuniones"
 
     init() {
         load()
@@ -287,6 +295,9 @@ final class AppState: ObservableObject {
         status = "Detenido"
         metrics.level = 0
         stopTimer()
+        if askTasksOnStop, !entries.isEmpty {
+            extractTasks()
+        }
     }
 
     func togglePause() {
@@ -648,6 +659,127 @@ final class AppState: ObservableObject {
         }
     }
 
+    // MARK: Tasks → Reminders, export
+
+    /// Asks Qwen for the meeting's action items and shows them for confirmation.
+    func extractTasks() {
+        guard !isExtractingTasks else { return }
+        let text = transcriptForAI()
+        guard !text.isEmpty else {
+            toast("Todavía no hay transcripción.")
+            return
+        }
+        guard let server = resolveServer() else {
+            toast(PythonBridge.missingMessage, kind: "error")
+            return
+        }
+        isExtractingTasks = true
+        toast("Buscando las tareas de la reunión…")
+        let notes = liveMarkdown
+        let recent = String(text.suffix(Self.questionChars))
+        let lang = summaryLang
+        let today = Self.isoDay()
+        let generation = aiGeneration
+        Task {
+            do {
+                let tasks = try await server.tasks(notes: notes, text: recent, lang: lang, today: today)
+                self.isExtractingTasks = false
+                guard generation == self.aiGeneration else { return }
+                if tasks.isEmpty {
+                    self.toast("No se detectaron tareas en la reunión.")
+                } else {
+                    self.meetingTasks = tasks
+                    self.compact = false
+                    self.showTasksSheet = true
+                }
+            } catch {
+                self.isExtractingTasks = false
+                self.toast("No se pudieron sacar las tareas: \(error.localizedDescription)", kind: "error")
+            }
+        }
+    }
+
+    func addSelectedTasksToReminders() {
+        let chosen = meetingTasks.filter(\.selected)
+        guard !chosen.isEmpty else { return }
+        let title = meetingTitle()
+        Task {
+            do {
+                let count = try await self.reminders.add(chosen, listName: Self.remindersList, meetingTitle: title)
+                self.showTasksSheet = false
+                self.toast(count == 1
+                    ? "1 tarea agregada a Recordatorios (lista «\(Self.remindersList)»)."
+                    : "\(count) tareas agregadas a Recordatorios (lista «\(Self.remindersList)»).")
+            } catch {
+                self.toast(error.localizedDescription, kind: "error")
+            }
+        }
+    }
+
+    func copyTasks() {
+        let chosen = meetingTasks.filter(\.selected)
+        copyText(chosen.map(\.markdownLine).joined(separator: "\n"), message: "Tareas copiadas")
+    }
+
+    /// "Reunión 2026-11-08 10:02 · VoiceLogger Mac"
+    private func meetingTitle() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm"
+        return "Reunión \(f.string(from: sessionStart ?? Date())) · VoiceLogger Mac"
+    }
+
+    private static func isoDay() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: Date())
+    }
+
+    /// Whole meeting as Markdown (summary, key questions, tasks, Q&A,
+    /// transcript): opens as-is in Obsidian and imports into Notion.
+    func meetingMarkdown() -> String {
+        var md = ["# \(meetingTitle())", ""]
+        md.append("- Duración: \(metrics.elapsed) · Bloques: \(entries.count) · Palabras: \(wordCount)")
+        md.append("- Modelo de transcripción: \(modelName) · Idioma: \(language.uppercased())")
+        md.append("")
+        md.append("## Resumen IA")
+        md.append("")
+        // Demote the model's "##" sections one level under this heading.
+        md.append(liveSummary.isEmpty ? "_(sin resumen)_" : liveSummary.replacingOccurrences(of: "\n## ", with: "\n### ").replacingOccurrences(of: "## ", with: "### ", options: .anchored))
+        if !keyQuestions.isEmpty {
+            md += ["", "## Preguntas clave", ""] + keyQuestions.map { "- \($0)" }
+        }
+        if !meetingTasks.isEmpty {
+            md += ["", "## Tareas", ""] + meetingTasks.map(\.markdownLine)
+        }
+        let answered = qaItems.filter { $0.answer != nil && !$0.failed }
+        if !answered.isEmpty {
+            md += ["", "## Preguntas y respuestas"]
+            for item in answered {
+                md += ["", "### \(item.question)", "", item.answer ?? ""]
+            }
+        }
+        md += ["", "## Transcripción", ""]
+        md += entries.map { "**[\($0.timestamp)]** \($0.text)  " }
+        return md.joined(separator: "\n") + "\n"
+    }
+
+    func exportMarkdown() {
+        guard !entries.isEmpty else {
+            toast("Todavía no hay transcripción para exportar.")
+            return
+        }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
+        panel.nameFieldStringValue = "reunion_\(Self.fileStamp()).md"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try meetingMarkdown().write(to: url, atomically: true, encoding: .utf8)
+            toast("Exportado: \(url.lastPathComponent)")
+        } catch {
+            toast("No se pudo exportar: \(error.localizedDescription)", kind: "error")
+        }
+    }
+
     var canAsk: Bool {
         !qaQuestion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !entries.isEmpty
     }
@@ -812,6 +944,7 @@ final class AppState: ObservableObject {
         summaryError = nil
         qaItems.removeAll()
         qaRevision += 1
+        meetingTasks = []
     }
 
     func changeFontSize(_ delta: Int) {
@@ -910,6 +1043,7 @@ final class AppState: ObservableObject {
         d.set(qwenModel, forKey: "qwen_model")
         d.set(longAnswers, forKey: "long_answers")
         d.set(liveSpeed, forKey: "live_speed")
+        d.set(askTasksOnStop, forKey: "ask_tasks_on_stop")
         d.set(showKeyQuestions, forKey: "show_key_questions")
         d.set(uiScale, forKey: "ui_scale")
         d.set(transcriptFontSize, forKey: "font_size")
@@ -917,9 +1051,27 @@ final class AppState: ObservableObject {
         d.set(dimWhenIdle, forKey: "dim_when_idle")
     }
 
+    /// Settings saved under `swift run` (domain "VoiceLoggerMacNative") are
+    /// copied once into the packaged app's domain (its bundle identifier).
+    private static func migrateSettingsFromSwiftRun() {
+        let d = UserDefaults.standard
+        guard Bundle.main.bundleIdentifier != nil, d.object(forKey: "model") == nil,
+              let old = UserDefaults(suiteName: "VoiceLoggerMacNative"), old.object(forKey: "model") != nil
+        else { return }
+        let keys = [
+            "model", "language", "sensitivity", "alerts", "alert_sound", "autoscroll", "ai_lang", "auto_summary",
+            "font_size", "always_on_top", "dim_when_idle", "live_interval", "qwen_model", "ui_scale",
+            "long_answers", "live_speed", "show_key_questions", "ask_tasks_on_stop", "python_root",
+        ]
+        for key in keys {
+            if let value = old.object(forKey: key) { d.set(value, forKey: key) }
+        }
+    }
+
     private func load() {
         isLoading = true
         defer { isLoading = false }
+        Self.migrateSettingsFromSwiftRun()
         let d = UserDefaults.standard
         modelName = d.string(forKey: "model") ?? WhisperKitTranscriber.defaultModel
         language = d.string(forKey: "language") ?? "en"
@@ -933,6 +1085,7 @@ final class AppState: ObservableObject {
         qwenModel = d.string(forKey: "qwen_model") ?? QwenModels.default
         longAnswers = d.object(forKey: "long_answers") as? Bool ?? true
         liveSpeed = d.string(forKey: "live_speed") ?? "normal"
+        askTasksOnStop = d.object(forKey: "ask_tasks_on_stop") as? Bool ?? true
         showKeyQuestions = d.object(forKey: "show_key_questions") as? Bool ?? true
         uiScale = d.object(forKey: "ui_scale") as? Double ?? 1.15
         transcriptFontSize = max(12, min(28, d.object(forKey: "font_size") as? Int ?? 17))
@@ -1483,6 +1636,8 @@ struct FullView: View {
         Menu {
             Button("Guardar transcripción…", systemImage: "square.and.arrow.down") { state.saveMeetingTxt() }
             Button("Copiar transcripción", systemImage: "doc.on.doc") { state.copyAll() }
+            Button("Exportar reunión (Markdown)…", systemImage: "square.and.arrow.up") { state.exportMarkdown() }
+            Button("Tareas → Recordatorios…", systemImage: "checklist") { state.extractTasks() }
             Button("Abrir carpeta de logs", systemImage: "folder") { state.openLogsFolder() }
             Button("Editar contexto de la IA…", systemImage: "brain") { state.openAIContext() }
             Button("Liberar memoria de la IA", systemImage: "memorychip") { state.unloadAI() }
@@ -1858,6 +2013,7 @@ struct SettingsPopover: View {
                 }
                 Toggle("Respuestas largas y detalladas", isOn: $state.longAnswers)
                 Toggle("Mostrar preguntas detectadas en el audio", isOn: $state.showKeyQuestions)
+                Toggle("Al detener, proponer las tareas para Recordatorios", isOn: $state.askTasksOnStop)
                 Toggle("Resumen y preguntas clave en vivo", isOn: $state.autoSummary)
                 Picker("Actualizar cada", selection: $state.liveInterval) {
                     Text("15 s").tag(15)
@@ -1891,6 +2047,77 @@ struct SettingsPopover: View {
 }
 
 // MARK: - Compact, overlay, menu bar
+
+/// "N tasks detected — add them to Reminders?" shown when the meeting stops.
+struct TasksSheet: View {
+    @ObservedObject var state: AppState
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.uiScale) private var uiScale
+
+    var body: some View {
+        let count = state.meetingTasks.count
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "checklist")
+                    .scaledFont(26, weight: .semibold)
+                    .foregroundStyle(Theme.brand)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(count == 1 ? "Se detectó 1 tarea en la reunión" : "Se detectaron \(count) tareas en la reunión")
+                        .scaledFont(17, weight: .bold)
+                    Text("¿Quieres agregarlas a Recordatorios de tu Mac (lista «\(AppState.remindersList)»)? Desmarca las que no.")
+                        .scaledFont(12)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach($state.meetingTasks) { $task in
+                        Toggle(isOn: $task.selected) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(task.title)
+                                    .scaledFont(14, weight: .semibold)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                if !task.owner.isEmpty || !task.due.isEmpty {
+                                    HStack(spacing: 12) {
+                                        if !task.owner.isEmpty { Label(task.owner, systemImage: "person") }
+                                        if !task.due.isEmpty { Label(task.due, systemImage: "calendar") }
+                                    }
+                                    .scaledFont(11)
+                                    .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        .toggleStyle(.checkbox)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Theme.row, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                }
+            }
+            .frame(minHeight: 120, maxHeight: 360 * uiScale)
+            if !RemindersExporter.isAvailable {
+                Label("Recordatorios funciona en la app empaquetada (native/package.sh). Mientras tanto puedes copiarlas.",
+                      systemImage: "info.circle")
+                    .scaledFont(12)
+                    .foregroundStyle(Color.orange)
+            }
+            HStack {
+                Button("Copiar") { state.copyTasks() }
+                Spacer()
+                Button("Ahora no") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Agregar a Recordatorios") { state.addSelectedTasksToReminders() }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.brand)
+                    .disabled(!state.meetingTasks.contains(where: \.selected) || !RemindersExporter.isAvailable)
+            }
+        }
+        .padding(20)
+        .frame(width: 540 * uiScale)
+        .preferredColorScheme(.dark)
+    }
+}
 
 struct CompactView: View {
     @ObservedObject var state: AppState
@@ -2022,6 +2249,10 @@ struct ContentView: View {
         .onChange(of: state.compact) { _, compact in
             windowBox.setCompact(compact)
         }
+        .sheet(isPresented: $state.showTasksSheet) {
+            TasksSheet(state: state)
+                .environment(\.uiScale, CGFloat(state.uiScale))
+        }
     }
 }
 
@@ -2043,6 +2274,10 @@ struct SessionCommands: Commands {
                 .keyboardShortcut("c", modifiers: [.command, .shift])
             Button("Actualizar resumen IA") { AppState.shared.refreshSummary(force: true) }
                 .keyboardShortcut("r", modifiers: .command)
+            Button("Exportar reunión (Markdown)…") { AppState.shared.exportMarkdown() }
+                .keyboardShortcut("e", modifiers: .command)
+            Button("Tareas → Recordatorios…") { AppState.shared.extractTasks() }
+                .keyboardShortcut("t", modifiers: [.command, .shift])
             Divider()
             Button("Aumentar letra") { AppState.shared.changeFontSize(1) }
                 .keyboardShortcut("+", modifiers: .command)

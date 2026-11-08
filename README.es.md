@@ -29,6 +29,8 @@ Requisitos: macOS 15+, Apple Silicon, Xcode 16 (Swift 6). La parte de IA usa el 
 cd native && swift run
 ```
 
+Para abrirla con doble click (sin Terminal), con su ícono y Recordatorios: `native/package.sh --install` (o `--dmg` para compartir). Al detener una reunión, la app propone agregar las tareas detectadas a Recordatorios de Apple, y ⋯ → *Exportar reunión (Markdown)* sirve para Obsidian/Notion.
+
 Detalles, atajos y modelos: [native/README.md](native/README.md).
 
 <!-- Pantallazos de la app real: captura la ventana (sin sombra) y descomenta abajo.
