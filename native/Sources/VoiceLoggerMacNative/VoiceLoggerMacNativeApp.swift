@@ -1270,6 +1270,11 @@ enum Theme {
     static let cardBorder = Color.white.opacity(0.07)
     static let row = Color.white.opacity(0.035)
     static let brand = Color(red: 0.06, green: 0.73, blue: 0.51)
+    /// Darker fills for white text (WCAG ≥ 4.5:1): the bright brand/red/orange
+    /// only reach 2.4-3.4:1 behind white text. Accents and titles keep the bright ones.
+    static let brandStrong = Color(red: 0.043, green: 0.490, blue: 0.353)   // #0B7D5A · 5.1:1
+    static let dangerStrong = Color(red: 0.725, green: 0.110, blue: 0.110)  // #B91C1C · 6.5:1
+    static let warningStrong = Color(red: 0.706, green: 0.325, blue: 0.035) // #B45309 · 5.0:1
     static let ai = Color(red: 0.66, green: 0.45, blue: 0.98)
     static let qa = Color(red: 0.22, green: 0.74, blue: 0.97)
 
@@ -1452,7 +1457,7 @@ struct ToastView: View {
     let kind: String
 
     var body: some View {
-        let color: Color = kind == "alert" ? .red : (kind == "error" ? .orange : Theme.brand)
+        let color: Color = kind == "alert" ? Theme.dangerStrong : (kind == "error" ? Theme.warningStrong : Theme.brandStrong)
         let icon = kind == "alert" ? "bell.fill" : (kind == "error" ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
         Label(message, systemImage: icon)
             .scaledFont(12, weight: .semibold)
@@ -1526,7 +1531,7 @@ struct TranscriptRow: View {
                         .foregroundStyle(.white)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
-                        .background(Color.red, in: RoundedRectangle(cornerRadius: 3))
+                        .background(Theme.dangerStrong, in: RoundedRectangle(cornerRadius: 3))
                 }
             }
             Text(Self.highlighted(entry.text, query: query))
@@ -1761,7 +1766,7 @@ struct FullView: View {
                 .frame(minWidth: 78)
             }
             .buttonStyle(.borderedProminent)
-            .tint(state.isListening ? Color.red : Theme.brand)
+            .tint(state.isListening ? Theme.dangerStrong : Theme.brandStrong)
             .disabled(state.isStarting)
             .help("Iniciar / detener la escucha (⌘↩)")
 
@@ -2028,7 +2033,7 @@ struct FullView: View {
                 Label("Agregar a Recordatorios…", systemImage: "checklist")
             }
             .buttonStyle(.borderedProminent)
-            .tint(Theme.brand)
+            .tint(Theme.brandStrong)
             .disabled(state.isExtractingTasks)
             .padding(.top, 4)
             .help("La IA ordena responsable y fecha y te deja elegir cuáles agregar")
@@ -2362,7 +2367,7 @@ struct ModelPickerSheet: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
-                .tint(Theme.brand)
+                .tint(Theme.brandStrong)
             }
         }
         .padding(22)
@@ -2433,7 +2438,7 @@ struct TasksSheet: View {
                 Button("Agregar a Recordatorios") { state.addSelectedTasksToReminders() }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
-                    .tint(Theme.brand)
+                    .tint(Theme.brandStrong)
                     .disabled(!state.meetingTasks.contains(where: \.selected) || !RemindersExporter.isAvailable)
             }
         }
@@ -2474,7 +2479,7 @@ struct CompactView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
-                .tint(state.isListening ? Color.red : Theme.brand)
+                .tint(state.isListening ? Theme.dangerStrong : Theme.brandStrong)
                 .disabled(state.isStarting)
                 SessionMeter(metrics: state.metrics)
             }
@@ -2495,7 +2500,7 @@ struct OverlayView: View {
             HStack(spacing: 6) {
                 Circle().fill(state.statusColor).frame(width: 8, height: 8)
                 Text("SUBTÍTULOS").font(.caption2.bold()).foregroundStyle(.secondary)
-                Text("arrastra para mover").font(.caption2).foregroundStyle(.tertiary)
+                Text("arrastra para mover").font(.caption2).foregroundStyle(.secondary)
                 Spacer()
                 Button { dismissWindow(id: "overlay") } label: {
                     Image(systemName: "xmark")
