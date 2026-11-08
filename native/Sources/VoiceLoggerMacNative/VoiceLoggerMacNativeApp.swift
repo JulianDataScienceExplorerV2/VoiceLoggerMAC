@@ -27,6 +27,8 @@ struct QAItem: Identifiable, Equatable {
     /// Web pages cited by an answer extended with "Ampliar con internet".
     var sources: [WebSource] = []
     var fromWeb = false
+    /// Answered in "Ideas" mode (meeting + own knowledge + web).
+    var brainstorm = false
 }
 
 /// Qwen models for the summary / questions (MLX 4-bit, downloaded once to the
@@ -159,6 +161,10 @@ final class AppState: ObservableObject {
     @Published var isExtractingTasks = false
     /// Show the "detected in the audio" questions (the X hides them).
     @Published var showKeyQuestions = true { didSet { save() } }
+    /// How questions are answered: "open" = Ideas (meeting as context + the
+    /// model's knowledge + web; default, for brainstorming) or "meeting" =
+    /// only what was said in the meeting.
+    @Published var answerMode = "open" { didSet { save() } }
     /// Detailed answers (default) or short ones, for the Questions panel.
     @Published var longAnswers = true { didSet { save() } }
     /// Seconds between live summary updates (counted from the end of the previous one).
@@ -858,7 +864,7 @@ final class AppState: ObservableObject {
         if !answered.isEmpty {
             md += ["", "## Preguntas y respuestas"]
             for item in answered {
-                md += ["", "### \(item.fromWeb ? "🌐 " : "")\(item.question)", "", item.answer ?? ""]
+                md += ["", "### \(item.fromWeb ? "🌐 " : (item.brainstorm ? "💡 " : ""))\(item.question)", "", item.answer ?? ""]
                 for (index, source) in item.sources.enumerated() {
                     md.append("\(index + 1). [\(source.title)](\(source.url))")
                 }
@@ -915,7 +921,8 @@ final class AppState: ObservableObject {
             toast(PythonBridge.missingMessage, kind: "error")
             return false
         }
-        let item = QAItem(question: question)
+        let mode = answerMode
+        let item = QAItem(question: question, brainstorm: mode == "open")
         qaItems.append(item)
         qaRevision += 1
         let lang = summaryLang
@@ -924,21 +931,27 @@ final class AppState: ObservableObject {
         let detail = longAnswers ? "long" : "short"
         let session = currentSession()
         let directory = memoryDirectory.path
+        let web = allowWebSearch
         Task {
             let answer: String
+            let sources: [WebSource]
             let failed: Bool
             do {
-                answer = try await server.ask(
-                    question: question, text: context, notes: notes,
-                    session: session, memoryDir: directory, lang: lang, detail: detail
+                let result = try await server.ask(
+                    question: question, text: context, notes: notes, session: session,
+                    memoryDir: directory, lang: lang, detail: detail, mode: mode, web: web
                 )
+                answer = result.answer
+                sources = result.sources
                 failed = false
             } catch {
                 answer = error.localizedDescription
+                sources = []
                 failed = true
             }
             if let index = self.qaItems.firstIndex(where: { $0.id == item.id }) {
                 self.qaItems[index].answer = answer.isEmpty ? "—" : answer
+                self.qaItems[index].sources = sources
                 self.qaItems[index].failed = failed
                 self.qaRevision += 1
             }
@@ -1231,6 +1244,7 @@ final class AppState: ObservableObject {
         d.set(liveInterval, forKey: "live_interval")
         d.set(qwenModel, forKey: "qwen_model")
         d.set(longAnswers, forKey: "long_answers")
+        d.set(answerMode, forKey: "answer_mode")
         d.set(liveSpeed, forKey: "live_speed")
         d.set(vocabulary, forKey: "vocabulary")
         d.set(askTasksOnStop, forKey: "ask_tasks_on_stop")
@@ -1254,7 +1268,7 @@ final class AppState: ObservableObject {
         let keys = [
             "model", "language", "sensitivity", "alerts", "alert_sound", "autoscroll", "ai_lang", "auto_summary",
             "font_size", "always_on_top", "dim_when_idle", "live_interval", "qwen_model", "ui_scale",
-            "long_answers", "live_speed", "vocabulary", "show_key_questions", "ask_tasks_on_stop", "allow_web_search", "ask_models_on_launch", "models_chosen", "python_root",
+            "long_answers", "answer_mode", "live_speed", "vocabulary", "show_key_questions", "ask_tasks_on_stop", "allow_web_search", "ask_models_on_launch", "models_chosen", "python_root",
         ]
         for key in keys {
             if let value = old.object(forKey: key) { d.set(value, forKey: key) }
@@ -1279,6 +1293,7 @@ final class AppState: ObservableObject {
         let savedModel = d.string(forKey: "qwen_model") ?? QwenModels.default
         qwenModel = QwenModels.choices.contains(where: { $0.id == savedModel }) ? savedModel : QwenModels.default
         longAnswers = d.object(forKey: "long_answers") as? Bool ?? true
+        answerMode = d.string(forKey: "answer_mode") ?? "open"
         liveSpeed = d.string(forKey: "live_speed") ?? "normal"
         vocabulary = d.string(forKey: "vocabulary") ?? ""
         askTasksOnStop = d.object(forKey: "ask_tasks_on_stop") as? Bool ?? true
@@ -1645,6 +1660,10 @@ struct QARow: View {
                 Label("Ampliado con internet", systemImage: "globe")
                     .scaledFont(10, weight: .bold)
                     .foregroundStyle(Theme.qa)
+            } else if item.brainstorm {
+                Label("Ideas: reunión + conocimiento\(item.sources.isEmpty ? "" : " + internet")", systemImage: "lightbulb")
+                    .scaledFont(10, weight: .bold)
+                    .foregroundStyle(Theme.ai)
             }
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Image(systemName: "person.fill")
@@ -1682,7 +1701,7 @@ struct QARow: View {
                                     }
                                 }
                             }
-                            if allowWeb && !item.fromWeb {
+                            if allowWeb && !item.fromWeb && !item.brainstorm {
                                 Button {
                                     AppState.shared.extendWithWeb(item)
                                 } label: {
@@ -1698,7 +1717,8 @@ struct QARow: View {
                 } else {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
-                        Text(item.fromWeb ? "Buscando en internet…" : "Pensando…").foregroundStyle(.secondary)
+                        Text(item.fromWeb || (item.brainstorm && allowWeb) ? "Buscando en internet y pensando…" : "Pensando…")
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -2188,7 +2208,18 @@ struct FullView: View {
                 // Answers always keep some room, even with several detected questions.
                 .frame(minHeight: 90)
                 HStack(spacing: 8) {
-                    TextField("Pregunta algo sobre la reunión…", text: $state.qaQuestion)
+                    Picker("Modo", selection: $state.answerMode) {
+                        Label("Reunión", systemImage: "doc.text").tag("meeting")
+                        Label("Ideas", systemImage: "lightbulb").tag("open")
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                    .help(state.answerMode == "open"
+                          ? "Ideas: usa la reunión como contexto + lo que sabe la IA + internet (solo envía la pregunta)"
+                          : "Reunión: responde solo con lo que se dijo en la reunión")
+                    TextField(state.answerMode == "open" ? "Pide ideas o pregunta lo que quieras…" : "Pregunta algo sobre la reunión…",
+                              text: $state.qaQuestion)
                         .textFieldStyle(.plain)
                         .scaledFont(14)
                         .onSubmit { state.askQuestion() }
@@ -2349,7 +2380,11 @@ struct SettingsPopover: View {
                 Toggle("Respuestas largas y detalladas", isOn: $state.longAnswers)
                 Toggle("Mostrar preguntas detectadas en el audio", isOn: $state.showKeyQuestions)
                 Toggle("Al detener, proponer las tareas para Recordatorios", isOn: $state.askTasksOnStop)
-                Toggle("Botón «Ampliar con internet» (solo envía la pregunta)", isOn: $state.allowWebSearch)
+                Picker("Respuestas por defecto", selection: $state.answerMode) {
+                    Text("Ideas: reunión + conocimiento + internet").tag("open")
+                    Text("Reunión: solo lo que se dijo").tag("meeting")
+                }
+                Toggle("Permitir internet en respuestas (solo envía la pregunta)", isOn: $state.allowWebSearch)
                 Toggle("Preguntar los modelos al abrir la app", isOn: $state.askModelsOnLaunch)
                 Toggle("Resumen y preguntas clave en vivo", isOn: $state.autoSummary)
                 Picker("Actualizar cada", selection: $state.liveInterval) {

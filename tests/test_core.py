@@ -511,6 +511,56 @@ class EvaluateTranscriptTests(unittest.TestCase):
         self.assertAlmostEqual(result["accuracy"], 1 - len(lost.split()) / result["ref_words"])
 
 
+class OpenModeTests(unittest.TestCase):
+    """Modo «Ideas»: reunión como contexto + conocimiento propio + internet."""
+
+    def _run(self, **kwargs):
+        with mock.patch.object(summarizer, "_generate", return_value="Idea: try a pilot [1].") as fake, \
+                mock.patch.object(summarizer, "load_context", return_value=""), \
+                mock.patch.object(summarizer, "_ensure_model"):
+            reply = summarizer.open_question("[10:00] we need more users", "How do we grow?", "en",
+                                             notes="## Summary\nGrowth", **kwargs)
+        return reply, fake.call_args
+
+    def test_uses_web_and_brainstorm_prompts(self):
+        results = [{"title": "Growth loops", "url": "https://x.org/g", "snippet": "Referrals work"}]
+        reply, call = self._run(search=lambda q, language: results)
+        self.assertEqual(reply, {"answer": "Idea: try a pilot [1].", "sources": [{"title": "Growth loops", "url": "https://x.org/g"}]})
+        system, user = call[0][0], call[0][1]
+        self.assertIn("brainstorming meeting", system)
+        self.assertNotIn("Use only what the transcript says", system)
+        self.assertIn("[1] Growth loops — https://x.org/g", user)
+        self.assertIn("brainstorming partner", user)
+        self.assertIn("Notes of the meeting so far", user)
+
+    def test_offline_still_answers(self):
+        def broken(q, language):
+            raise OSError("offline")
+        reply, call = self._run(search=broken)
+        self.assertEqual(reply["sources"], [])
+        self.assertEqual(reply["answer"], "Idea: try a pilot [1].")
+        self.assertNotIn("Web search results", call[0][1])
+
+    def test_web_disabled_never_searches(self):
+        def must_not_search(q, language):
+            raise AssertionError("searched with web disabled")
+        reply, _ = self._run(search=must_not_search, web=False)
+        self.assertEqual(reply["sources"], [])
+
+    def test_serve_routes_by_mode(self):
+        with mock.patch.object(summarizer, "open_question", return_value={"answer": "o", "sources": []}) as op, \
+                mock.patch.object(summarizer, "ask_question", return_value="m") as mt:
+            summarizer.handle_request({"type": "ask", "text": "t", "question": "q", "mode": "open", "web": "0"})
+            summarizer.handle_request({"type": "ask", "text": "t", "question": "q"})
+        self.assertFalse(op.call_args[1]["web"])
+        mt.assert_called_once()
+
+    def test_meeting_mode_keeps_strict_prompt(self):
+        with mock.patch.object(summarizer, "load_context", return_value=""):
+            self.assertIn("Use only what the transcript says", summarizer._system_prompt("en"))
+            self.assertIn("lluvia de ideas", summarizer._system_prompt("es", mode="open"))
+
+
 class FitTokensTests(unittest.TestCase):
     def test_keeps_short_text(self):
         self.assertEqual(summarizer.fit_tokens("hola equipo", 100), "hola equipo")
@@ -579,7 +629,7 @@ class MemoryRequestsTests(unittest.TestCase):
             with mock.patch.object(summarizer, "ask_question", return_value="40k") as fake:
                 reply = summarizer.handle_request(dict(base, type="ask", text="[11:00] other topic",
                                                        question="What is the Q3 budget?", lang="en"))
-            self.assertEqual(reply, {"answer": "40k", "used_memory": True})
+            self.assertEqual(reply, {"answer": "40k", "used_memory": True, "sources": []})
             memory = fake.call_args[0][4]
             self.assertIn("Budget for Q3 is 40k.", memory)
             self.assertIn("[10:00 – 10:04]", memory)
@@ -623,7 +673,7 @@ class ServeTests(unittest.TestCase):
             )
         self.assertEqual(replies, [
             {"id": "a", "ok": True, "result": live},
-            {"id": "b", "ok": True, "result": {"answer": "42", "used_memory": False}},
+            {"id": "b", "ok": True, "result": {"answer": "42", "used_memory": False, "sources": []}},
         ])
 
     def test_errors_do_not_stop_the_server(self):

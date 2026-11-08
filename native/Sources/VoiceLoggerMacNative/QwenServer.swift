@@ -71,6 +71,7 @@ actor QwenServer {
 
     private struct Answer: Decodable {
         let answer: String
+        let sources: [WebSource]?
     }
 
     private struct Extended: Decodable {
@@ -121,13 +122,20 @@ actor QwenServer {
     /// `notes` (the live summary) and the meeting memory on disk (`session`
     /// in `memoryDir`) cover what no longer fits in `text`.
     /// `detail`: "long" (thorough, default) or "short" (2-4 sentences).
-    func ask(question: String, text: String, notes: String, session: String, memoryDir: String, lang: String, detail: String) async throws -> String {
+    /// `mode`: "meeting" answers only from the meeting; "open" (brainstorming)
+    /// adds the model's own knowledge and, if `web`, web results (only the
+    /// question text is searched).
+    func ask(
+        question: String, text: String, notes: String, session: String, memoryDir: String,
+        lang: String, detail: String, mode: String, web: Bool
+    ) async throws -> (answer: String, sources: [WebSource]) {
         let data = try await send([
             "type": "ask", "question": question, "text": text, "notes": notes,
             "session": session, "memory_dir": memoryDir, "lang": lang, "detail": detail,
+            "mode": mode, "web": web ? "1" : "0",
         ])
-        return try JSONDecoder().decode(Envelope<Answer>.self, from: data).result.answer
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let result = try JSONDecoder().decode(Envelope<Answer>.self, from: data).result
+        return (result.answer.trimmingCharacters(in: .whitespacesAndNewlines), result.sources ?? [])
     }
 
     /// Extends an answer with web results. Only `question` is searched on the

@@ -89,6 +89,13 @@ PROMPTS = {
             "Use only what the transcript says; do not invent names, dates or numbers. "
             "Reply only with the final result: do not show your reasoning or repeat these instructions."
         ),
+        "job_open": (
+            "Your job is to help me during a brainstorming meeting. "
+            "Always answer in English, even if the transcript is in another language. "
+            "Use the meeting as context and add your own knowledge and ideas, but never present them "
+            "as something said in the meeting, and do not invent facts about the meeting. "
+            "Reply only with the final result: do not show your reasoning or repeat these instructions."
+        ),
         "minutes": (
             "Write short meeting notes in Markdown from the transcript below, "
             "using exactly these sections:\n"
@@ -121,6 +128,12 @@ PROMPTS = {
             "transcript": "Meeting transcript:",
             "question": "Question:",
             "web": "Web search results:",
+            "open_instruction": (
+                "Answer as a brainstorming partner: use the meeting as context plus your own knowledge and "
+                "the web results to bring useful ideas, options, examples and next steps. Make clear what "
+                "comes from the meeting and what is general knowledge, and cite web facts with their number, "
+                "like [1] or [2]."
+            ),
             "previous": "Answer based on the meeting:",
             "extend": (
                 "Extend the answer with useful information from the web results. Keep what the "
@@ -157,6 +170,12 @@ PROMPTS = {
             "no inventes nombres, fechas ni cifras. "
             "Responde solo con el resultado final: no muestres tu razonamiento ni repitas estas instrucciones."
         ),
+        "job_open": (
+            "Tu trabajo es ayudarme durante una reunión de lluvia de ideas. "
+            "Responde SIEMPRE en español. Usa la reunión como contexto y añade tu propio conocimiento e "
+            "ideas, pero nunca los presentes como algo dicho en la reunión ni inventes datos de la reunión. "
+            "Responde solo con el resultado final: no muestres tu razonamiento ni repitas estas instrucciones."
+        ),
         "minutes": (
             "A partir de la siguiente transcripción de reunión, genera un acta breve "
             "en formato Markdown con estas secciones exactas:\n"
@@ -189,6 +208,12 @@ PROMPTS = {
             "transcript": "Transcripción de la reunión:",
             "question": "Pregunta:",
             "web": "Resultados de la búsqueda en internet:",
+            "open_instruction": (
+                "Responde como compañero de lluvia de ideas: usa la reunión como contexto más tu propio "
+                "conocimiento y los resultados de internet para aportar ideas, opciones, ejemplos y próximos "
+                "pasos. Deja claro qué viene de la reunión y qué es conocimiento general, y cita los datos de "
+                "internet con su número, como [1] o [2]."
+            ),
             "previous": "Respuesta basada en la reunión:",
             "extend": (
                 "Amplía la respuesta con información útil de los resultados de internet. Conserva lo "
@@ -330,12 +355,13 @@ def load_context(path=None, example_path=None):
     return "\n".join(lines).strip()[:MAX_CONTEXT_CHARS]
 
 
-def _system_prompt(language):
+def _system_prompt(language, mode="meeting"):
     prompts = _prompts(language)
+    job = prompts["job_open"] if mode == "open" else prompts["job"]
     context = load_context()
     if context:
-        return f"{context}\n\n{prompts['job']}"
-    return f"{prompts['role']} {prompts['job']}"
+        return f"{context}\n\n{job}"
+    return f"{prompts['role']} {job}"
 
 
 def split_text(text, max_chars=CHUNK_CHARS):
@@ -690,6 +716,63 @@ def ask_question(text, question, language="es", notes="", memory="", detail="lon
     ).result())
 
 
+# Respuestas en modo "Ideas" (lluvia de ideas): reunión + conocimiento + internet.
+OPEN_LENGTH = {
+    "en": {"long": "About 150-300 words, short paragraphs or bullets.", "short": "2-4 sentences."},
+    "es": {"long": "Unas 150-300 palabras, en párrafos cortos o viñetas.", "short": "2-4 frases."},
+}
+
+
+def _open_blocking(text, question, language, notes, memory, results, detail):
+    labels = _prompts(language)["ask"]
+    detail = detail if detail in ANSWER_MAX_TOKENS else "long"
+    blocks = []
+    notes = fit_tokens(notes, QA_NOTES_TOKENS, keep="head")
+    memory = fit_tokens(memory, QA_MEMORY_TOKENS, keep="head")
+    text = fit_tokens(text, QA_RECENT_TOKENS, keep="tail")
+    if notes:
+        blocks.append(f"{labels['notes']}\n{notes}")
+    if memory:
+        blocks.append(f"{labels['memory']}\n{memory}")
+    if text:
+        blocks.append(f"{labels['recent'] if (notes or memory) else labels['transcript']}\n{text}")
+    if results:
+        web = "\n\n".join(f"[{n}] {r['title']} — {r['url']}\n{r['snippet']}" for n, r in enumerate(results, start=1))
+        blocks.append(f"{labels['web']}\n{fit_tokens(web, EXTEND_WEB_TOKENS, keep='head')}")
+    length = OPEN_LENGTH.get(language, OPEN_LENGTH["en"])[detail]
+    blocks.append(f"{labels['question']} {question}\n{labels['open_instruction']} {length}")
+    return _generate(
+        _system_prompt(language, mode="open"), "\n\n".join(blocks),
+        max_tokens=ANSWER_MAX_TOKENS[detail] + 100, temp=0.4,
+    )
+
+
+def _run_open(text, question, language, notes, memory, results, detail):
+    _ensure_model()
+    return _open_blocking(text, question, language, notes, memory, results, detail)
+
+
+def open_question(text, question, language="en", notes="", memory="", detail="long", web=True, search=None):
+    """Modo «Ideas»: responde con la reunión como contexto + conocimiento propio + internet.
+
+    Solo el texto de la pregunta sale a internet (si ``web``). Si la búsqueda
+    falla, responde igual con lo que sabe. Devuelve {"answer", "sources"}.
+    """
+    results = []
+    if web:
+        if search is None:
+            from web_search import search
+        try:
+            results = search(question, language=language)
+        except Exception:
+            results = []  # sin internet: responde con la reunión y lo que sabe
+    text = _tail_text((text or "").strip(), QA_MAX_CHARS, language)
+    answer = clean_answer(_executor.submit(
+        _run_open, text, question, language, notes or "", memory or "", results, detail or "long"
+    ).result())
+    return {"answer": answer, "sources": [{"title": r["title"], "url": r["url"]} for r in results]}
+
+
 def recall(memory_dir, session, question, recent_text):
     """Fragmentos antiguos de la reunión (en disco) relevantes para la pregunta."""
     if not (memory_dir and session):
@@ -846,10 +929,16 @@ def handle_request(request):
         if not text.strip():
             raise ValueError("no transcript to answer from yet")
         memory = recall(request.get("memory_dir"), request.get("session"), question, text)
-        answer = ask_question(
-            text, question, language, request.get("notes") or "", memory, detail=request.get("detail") or "long"
-        )
-        return {"answer": answer, "used_memory": bool(memory)}
+        detail = request.get("detail") or "long"
+        if request.get("mode") == "open":
+            reply = open_question(
+                text, question, language, request.get("notes") or "", memory, detail,
+                web=request.get("web", "1") != "0",
+            )
+            reply["used_memory"] = bool(memory)
+            return reply
+        answer = ask_question(text, question, language, request.get("notes") or "", memory, detail=detail)
+        return {"answer": answer, "used_memory": bool(memory), "sources": []}
     if kind == "remember":
         from meeting_memory import MeetingMemory
 

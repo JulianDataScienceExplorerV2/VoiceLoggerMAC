@@ -58,6 +58,8 @@ botones y ajustes; *Letra de lectura* (A- / A+) agranda transcripción, resumen 
 - **Medir:** `python3 tools/evaluar_transcripcion.py reunion.txt referencia.txt` compara con un texto de referencia
   (p. ej. subtítulos de YouTube) y da precisión, tramos perdidos y texto añadido. Línea base con el video de Borough
   Market antes de estas mejoras: **81,6 %**, con 17 tramos perdidos (393 palabras).
+- Resultados con las mejoras: Borough Market (comiendo, música, mercado) **82,9 % → 87,6 %** en los mismos 20 min;
+  charla TED de Simon Sinek (voz clara, transcripción oficial de TED) **91,9 %**, con el 96 % de las palabras igual.
 
 ## IA en vivo: resumen + preguntas clave (Qwen local)
 
@@ -183,6 +185,18 @@ native/package.sh --dmg       # además native/dist/VoiceLoggerMac.dmg para comp
 **Resumen** (por defecto) · **Preguntas** · **Tareas**. El resumen en vivo se separa solo: las preguntas clave
 (tócalas para que la IA las responda) y las tareas (botón *Agregar a Recordatorios…*). El botón copiar copia la
 pestaña que estás viendo.
+
+## Modos de respuesta: Ideas o Reunión
+
+Junto a la caja de preguntas eliges cómo responde la IA:
+
+- **💡 Ideas** (por defecto, para lluvia de ideas): usa la reunión como contexto **más lo que sabe el modelo y
+  resultados de internet**; propone opciones, ejemplos y próximos pasos, separa lo dicho en la reunión del
+  conocimiento general y cita las fuentes web [1], [2]. Sin internet (o con el permiso apagado) responde igual con
+  la reunión y lo que sabe.
+- **📋 Reunión:** responde **solo** con lo que se dijo; si no está, lo dice.
+
+El modo por defecto se cambia en ⚙. A internet solo sale el texto de la pregunta.
 
 ## Ampliar con internet 🌐
 
