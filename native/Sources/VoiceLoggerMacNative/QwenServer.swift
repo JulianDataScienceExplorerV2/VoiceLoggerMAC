@@ -16,6 +16,13 @@ struct LiveInsights: Decodable, Sendable {
         case actionItems = "action_items"
     }
 
+    init(markdown: String, summary: String, questions: [String], actionItems: [String]) {
+        self.markdown = markdown
+        self.summary = summary
+        self.questions = questions
+        self.actionItems = actionItems
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         markdown = try container.decode(String.self, forKey: .markdown)

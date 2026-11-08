@@ -219,6 +219,15 @@ final class AppState: ObservableObject {
     /// part of the meeting); 0 = questions come with the summary.
     @Published var questionsInterval = 5 { didSet { save() } }
     @Published var isFindingQuestions = false
+    /// Where the local AI runs: "python" (summarizer.py process, stable) or
+    /// "swift" (MLX Swift inside the app, no Python; beta).
+    @Published var aiEngine = "python" {
+        didSet {
+            guard oldValue != aiEngine else { return }
+            save()
+            switchEngine()
+        }
+    }
     @Published var qwenModel = QwenModels.default {
         didSet {
             guard oldValue != qwenModel else { return }
@@ -239,7 +248,7 @@ final class AppState: ObservableObject {
     private var transcriberTaskModel: String?
     private var segmenter: PhraseSegmenter?
     private var bridge: PythonBridge?
-    private var qwen: QwenServer?
+    private var qwen: (any AIEngine)?
     private var sessionTimer: Timer?
     private var sessionStart: Date?
     private var lastAlertAt: TimeInterval = 0
@@ -711,13 +720,39 @@ final class AppState: ObservableObject {
         return bridge
     }
 
-    private func resolveServer() -> QwenServer? {
+    /// qwen_context.txt: the repo's (shared with the Python engine) or, without
+    /// the repo, one in Application Support.
+    private var contextFile: URL {
+        resolveBridge()?.contextFile
+            ?? logger.logsDirectory.deletingLastPathComponent().appendingPathComponent("qwen_context.txt")
+    }
+
+    private func resolveServer() -> (any AIEngine)? {
         if let qwen { return qwen }
+        if aiEngine == "swift" {
+            let engine = SwiftAIEngine(model: qwenModel, contextFile: contextFile, contextExample: resolveBridge()?.contextExample)
+            qwen = engine
+            return engine
+        }
         guard let bridge = resolveBridge() else { return nil }
         let log = logger.logsDirectory.deletingLastPathComponent().appendingPathComponent("qwen_server.log")
         let server = QwenServer(bridge: bridge, logURL: log, model: qwenModel)
         qwen = server
         return server
+    }
+
+    /// Frees the old engine's model and uses the new engine from the next request.
+    private func switchEngine() {
+        guard !isLoading else { return }
+        let old = qwen
+        qwen = nil
+        Task {
+            _ = await old?.unload()
+            if self.isListening, self.autoSummary { self.warmUpAI() }
+        }
+        toast(aiEngine == "swift"
+              ? "Motor de IA: Swift nativo (beta). Usa los mismos modelos; se carga en la próxima respuesta."
+              : "Motor de IA: Python.")
     }
 
     /// Restarts the Qwen process with the selected model (it loads on the next
@@ -1188,19 +1223,22 @@ final class AppState: ObservableObject {
     /// creating it from the template the first time. Python re-reads it on
     /// every request, so saving is enough.
     func openAIContext() {
-        guard let bridge = resolveBridge() else {
+        let bridge = resolveBridge()
+        guard bridge != nil || aiEngine == "swift" else {
             toast(PythonBridge.missingMessage, kind: "error")
             return
         }
+        let file = contextFile
         let fm = FileManager.default
-        if !fm.fileExists(atPath: bridge.contextFile.path) {
-            if fm.fileExists(atPath: bridge.contextExample.path) {
-                try? fm.copyItem(at: bridge.contextExample, to: bridge.contextFile)
+        if !fm.fileExists(atPath: file.path) {
+            try? fm.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if let example = bridge?.contextExample, fm.fileExists(atPath: example.path) {
+                try? fm.copyItem(at: example, to: file)
             } else {
-                try? "You are an expert in XXXXXXXX.\n".write(to: bridge.contextFile, atomically: true, encoding: .utf8)
+                try? "You are an expert in XXXXXXXX.\n".write(to: file, atomically: true, encoding: .utf8)
             }
         }
-        NSWorkspace.shared.open(bridge.contextFile)
+        NSWorkspace.shared.open(file)
         toast("Guarda el archivo: se aplica en la siguiente respuesta de la IA.")
     }
 
@@ -1514,6 +1552,7 @@ final class AppState: ObservableObject {
         d.set(liveInterval, forKey: "live_interval")
         d.set(questionsInterval, forKey: "questions_interval")
         d.set(qwenModel, forKey: "qwen_model")
+        d.set(aiEngine, forKey: "ai_engine")
         d.set(longAnswers, forKey: "long_answers")
         d.set(answerMode, forKey: "answer_mode")
         d.set(liveSpeed, forKey: "live_speed")
@@ -1541,7 +1580,7 @@ final class AppState: ObservableObject {
         else { return }
         let keys = [
             "model", "language", "sensitivity", "alerts", "alert_sound", "autoscroll", "ai_lang", "auto_summary",
-            "font_size", "always_on_top", "dim_when_idle", "live_interval", "qwen_model", "ui_scale",
+            "font_size", "always_on_top", "dim_when_idle", "live_interval", "qwen_model", "ai_engine", "ui_scale",
             "long_answers", "answer_mode", "live_speed", "vocabulary", "show_key_questions", "ai_questions", "questions_interval", "ask_tasks_on_stop", "allow_web_search", "preferred_sites", "read_web_pages", "ask_models_on_launch", "models_chosen", "python_root",
         ]
         for key in keys {
@@ -1571,6 +1610,7 @@ final class AppState: ObservableObject {
         // A model that is no longer offered (e.g. the removed Qwen3.5) falls back to the default.
         let savedModel = d.string(forKey: "qwen_model") ?? QwenModels.default
         qwenModel = QwenModels.choices.contains(where: { $0.id == savedModel }) ? savedModel : QwenModels.default
+        aiEngine = d.string(forKey: "ai_engine") == "swift" ? "swift" : "python"
         longAnswers = d.object(forKey: "long_answers") as? Bool ?? true
         answerMode = d.string(forKey: "answer_mode") ?? "open"
         liveSpeed = d.string(forKey: "live_speed") ?? "normal"
@@ -2805,6 +2845,11 @@ struct SettingsPopover: View {
                 }
             }
             Section("IA local (Qwen)") {
+                Picker("Motor de IA", selection: $state.aiEngine) {
+                    Text("Python (estable)").tag("python")
+                    Text("Swift nativo (beta)").tag("swift")
+                }
+                .help("Swift nativo: la IA corre dentro de la app con MLX Swift, sin Python. Mismos modelos, prompts y búsqueda; está en pruebas. Necesita la app empaquetada con native/package.sh.")
                 Picker("Modelo", selection: $state.qwenModel) {
                     ForEach(QwenModels.choices, id: \.id) { choice in
                         Text(choice.label).tag(choice.id)

@@ -173,7 +173,10 @@ native/package.sh --install   # además la copia a /Aplicaciones
 native/package.sh --dmg       # además native/dist/VoiceLoggerMac.dmg para compartir
 ```
 
-- La IA sigue usando el `.venv` del repo: la app guarda dónde está el repo (no lo muevas o vuelve a empaquetar).
+- Compila con **`xcodebuild`** (hace falta **Xcode** completo, no solo las Command Line Tools): es lo único que
+  compila los shaders Metal de MLX que usa el motor «Swift nativo». La primera vez tarda varios minutos (compila MLX).
+- Con el motor **Python** la IA usa el `.venv` del repo: la app guarda dónde está el repo (no lo muevas o vuelve a
+  empaquetar). Con el motor **Swift nativo** no hace falta Python.
 - Firma: usa el primer certificado de firma que encuentre (Developer ID, Apple Development o uno llamado
   «VoiceLogger»); si no hay ninguno, firma ad-hoc. También se puede forzar: `SIGN_IDENTITY="…" native/package.sh`.
 
@@ -257,12 +260,33 @@ modelo pequeño pueden fallar: revisa las fuentes.
 - ⋯ → **Exportar reunión (Markdown)…** (⌘E): resumen, preguntas clave, tareas, preguntas y respuestas y transcripción.
   Se abre tal cual en Obsidian y se importa en Notion.
 
+## Motor de IA: Python o Swift nativo (beta)
+
+⚙ → **Motor de IA**:
+
+- **Python (estable, por defecto):** `summarizer.py serve` con mlx-lm, como hasta ahora.
+- **Swift nativo (beta):** la IA corre **dentro de la app** con [MLX Swift](https://github.com/ml-explore/mlx-swift-lm),
+  sin Python. Es un port de `summarizer.py`, `meeting_memory.py` y `web_search.py`: **mismos prompts** (comprobados
+  letra por letra contra el Python), mismos presupuestos de tokens, limpieza (razonamiento, bucles), resumen en
+  vivo, preguntas cada pocos segundos, respuestas Reunión/Ideas en dos pasos, «Ampliar con internet» (`site:`,
+  fuentes confiables, lectura de páginas), tareas y memoria en disco (mismo formato de archivo).
+  - Usa **los mismos modelos y la misma caché** (`~/.cache/huggingface/hub`): no vuelve a descargarlos.
+  - Una generación a la vez (como el hilo único de Python), caché de MLX limitada a 512 MB y vaciada tras cada
+    respuesta, y el modelo se libera tras 10 min sin uso.
+  - **Necesita la app empaquetada con `native/package.sh`** (xcodebuild). Con `swift run` los shaders de MLX no se
+    compilan: la app lo detecta y avisa en vez de cerrarse; usa el motor Python en ese caso.
+  - El archivo de contexto es el mismo `qwen_context.txt` del repo (o uno en Application Support si no hay repo).
+- Cambiar de motor libera el modelo del anterior: nunca quedan los dos cargados.
+
+**Cómo probarlo:** empaqueta (`native/package.sh --install`), abre la app, elige ⚙ → Motor de IA → Swift nativo, y
+compara con el mismo video que con Python (resumen, preguntas, una respuesta en Reunión y otra en Ideas).
+
 ## Ejecutar
 
 ```bash
 cd native
-swift run
-swift test
+swift run      # interfaz y transcripción; para el motor Swift nativo usa native/package.sh
+swift test     # incluye las pruebas del motor Swift (texto, memoria y búsqueda; sin modelo)
 ```
 
 ## Roadmap

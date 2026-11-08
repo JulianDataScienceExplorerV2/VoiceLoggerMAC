@@ -50,16 +50,35 @@ xml_escape() {
 }
 
 cd "$NATIVE_DIR"
-echo "→ Compilando en modo release…"
-swift build -c release --product "$EXECUTABLE"
-BIN_DIR="$(swift build -c release --show-bin-path)"
+# xcodebuild (no «swift build»): es lo único que compila los shaders Metal de MLX
+# (default.metallib), que necesita el motor de IA «Swift nativo». Requiere Xcode.
+if ! xcodebuild -version >/dev/null 2>&1; then
+    echo "Necesitas Xcode (no solo las Command Line Tools): instálalo desde la App Store y ejecuta" >&2
+    echo "  sudo xcode-select -s /Applications/Xcode.app/Contents/Developer" >&2
+    exit 1
+fi
+echo "→ Compilando en modo release con xcodebuild (la primera vez tarda: compila MLX)…"
+DERIVED="$NATIVE_DIR/.build/xcode"
+xcodebuild -scheme "$EXECUTABLE" -destination 'platform=macOS' -configuration Release \
+    -derivedDataPath "$DERIVED" -skipMacroValidation -skipPackagePluginValidation -quiet build
+BIN_DIR="$DERIVED/Build/Products/Release"
 
 echo "→ Armando $APP_NAME.app…"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/$EXECUTABLE" "$APP/Contents/MacOS/$EXECUTABLE"
-# Recursos de SwiftPM del paquete y sus dependencias (si los hay).
+# Recursos de SwiftPM del paquete y sus dependencias: entre ellos mlx-swift_Cmlx.bundle,
+# con los shaders de MLX (default.metallib).
 find "$BIN_DIR" -maxdepth 1 -name "*.bundle" -exec cp -R {} "$APP/Contents/Resources/" \;
+if ! find "$APP/Contents/Resources" -name "*.metallib" | grep -q .; then
+    echo "  (aviso: no encontré default.metallib; el motor de IA «Swift nativo» no funcionará, el de Python sí)"
+fi
+# Frameworks dinámicos de las dependencias, si los hay.
+if [ -d "$BIN_DIR/PackageFrameworks" ]; then
+    mkdir -p "$APP/Contents/Frameworks"
+    cp -R "$BIN_DIR/PackageFrameworks/"*.framework "$APP/Contents/Frameworks/" 2>/dev/null || true
+    install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP/Contents/MacOS/$EXECUTABLE" 2>/dev/null || true
+fi
 if [ -f "$ICON" ]; then
     cp "$ICON" "$APP/Contents/Resources/AppIcon.icns"
 else
