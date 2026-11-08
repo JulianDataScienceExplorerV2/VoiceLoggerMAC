@@ -758,6 +758,75 @@ class OpenModeTests(unittest.TestCase):
             self.assertIn("lluvia de ideas", summarizer._system_prompt("es", mode="open"))
 
 
+class TwoStepIdeasTests(unittest.TestCase):
+    """Modo Ideas: respuesta rápida de Qwen + «Puede complementar tu pregunta» con internet."""
+
+    RESULTS = [{"title": "Growth", "url": "https://en.wikipedia.org/wiki/G", "snippet": "s", "trusted": True,
+                "content": "Referral programs grow users."}]
+
+    def setUp(self):
+        summarizer._web_prefetch.clear()
+
+    def _patched(self, output):
+        return mock.patch.object(summarizer, "_generate", return_value=output), \
+            mock.patch.object(summarizer, "load_context", return_value=""), \
+            mock.patch.object(summarizer, "_ensure_model")
+
+    def test_quick_answer_does_not_mention_web(self):
+        gen, ctx, ensure = self._patched("Try a pilot.")
+        with gen as fake, ctx, ensure:
+            summarizer.open_question("[10:00] we need users", "How do we grow?", "en", web=False)
+        self.assertIn("your own knowledge to bring", fake.call_args[0][1])
+        self.assertNotIn("web results", fake.call_args[0][1])
+
+    def test_ask_prefetches_while_answering_and_complement_reuses_it(self):
+        calls = []
+
+        def search(q, **kwargs):
+            calls.append((q, kwargs))
+            return self.RESULTS
+
+        gen, ctx, ensure = self._patched("Referrals help [1].")
+        with gen as fake, ctx, ensure, mock.patch.dict(sys.modules, {"web_search": types.SimpleNamespace(search=search)}):
+            quick = summarizer.handle_request({
+                "type": "ask", "mode": "open", "web": "0", "prefetch": "1", "text": "[10:00] we need users",
+                "question": "How do we grow?", "sites": "hbr.org", "read": "1",
+            })
+            self.assertEqual(quick["sources"], [])
+            extra = summarizer.handle_request({
+                "type": "complement", "question": "How do we grow?", "previous": "Try a pilot.",
+                "notes": "", "sites": "hbr.org", "read": "1",
+            })
+        self.assertEqual(calls, [("How do we grow?", {"language": "en", "sites": "hbr.org",
+                                                      "read": summarizer.WEB_READ_PAGES})])
+        self.assertEqual(extra, {"answer": "Referrals help [1].", "sources": [
+            {"title": "Growth", "url": "https://en.wikipedia.org/wiki/G", "trusted": True, "read": True}]})
+        prompt = fake.call_args[0][1]
+        self.assertIn("Answer already given:\nTry a pilot.", prompt)
+        self.assertIn("Do not repeat the answer already given", prompt)
+        self.assertIn("(reliable source)", prompt)
+        self.assertEqual(summarizer._web_prefetch, {})
+
+    def test_complement_without_prefetch_searches_now(self):
+        gen, ctx, ensure = self._patched("NADA NUEVO.")
+        with gen, ctx, ensure:
+            reply = summarizer.complement_with_web("¿Cuánto es 2+2?", previous="4", language="es",
+                                                   search=lambda q, **kwargs: self.RESULTS)
+        self.assertEqual(reply["answer"], "")  # internet no aportó nada
+        self.assertEqual(len(reply["sources"]), 1)
+
+    def test_complement_with_no_results_skips_the_model(self):
+        with mock.patch.object(summarizer, "_generate") as fake:
+            reply = summarizer.complement_with_web("x", search=lambda q, **kwargs: [])
+        fake.assert_not_called()
+        self.assertEqual(reply, {"answer": "", "sources": []})
+
+    def test_old_prefetches_are_dropped(self):
+        for n in range(12):
+            summarizer.prefetch_web(f"q{n}", search=lambda q, **kwargs: [])
+        self.assertLessEqual(len(summarizer._web_prefetch), 8)
+
+
 class FitTokensTests(unittest.TestCase):
     def test_keeps_short_text(self):
         self.assertEqual(summarizer.fit_tokens("hola equipo", 100), "hola equipo")

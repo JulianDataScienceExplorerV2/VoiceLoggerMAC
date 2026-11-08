@@ -144,6 +144,18 @@ PROMPTS = {
                 "comes from the meeting and what is general knowledge, and cite web facts with their number, "
                 "like [1] or [2]. If sources disagree, trust the ones marked (reliable source)."
             ),
+            "open_instruction_noweb": (
+                "Answer as a brainstorming partner: use the meeting as context plus your own knowledge to "
+                "bring useful ideas, options, examples and next steps. Make clear what comes from the "
+                "meeting and what is general knowledge."
+            ),
+            "given": "Answer already given:",
+            "complement": (
+                "Using only the web results, add what they contribute to the answer already given: new "
+                "facts, figures, examples or corrections. Do not repeat the answer already given. Cite web "
+                "facts with their number, like [1] or [2]. If sources disagree, trust the ones marked "
+                "(reliable source). If the web results add nothing useful, reply only: NOTHING NEW"
+            ),
             "previous": "Answer based on the meeting:",
             "extend": (
                 "Extend the answer with useful information from the web results. Keep what the "
@@ -226,6 +238,18 @@ PROMPTS = {
                 "pasos. Deja claro qué viene de la reunión y qué es conocimiento general, y cita los datos de "
                 "internet con su número, como [1] o [2]. Si las fuentes no coinciden, confía en las marcadas "
                 "(fuente confiable)."
+            ),
+            "open_instruction_noweb": (
+                "Responde como compañero de lluvia de ideas: usa la reunión como contexto más tu propio "
+                "conocimiento para aportar ideas, opciones, ejemplos y próximos pasos. Deja claro qué viene "
+                "de la reunión y qué es conocimiento general."
+            ),
+            "given": "Respuesta ya dada:",
+            "complement": (
+                "Usando solo los resultados de internet, agrega lo que aportan a la respuesta ya dada: datos "
+                "nuevos, cifras, ejemplos o correcciones. No repitas la respuesta ya dada. Cita los datos de "
+                "internet con su número, como [1] o [2]. Si las fuentes no coinciden, confía en las marcadas "
+                "(fuente confiable). Si los resultados no aportan nada útil, responde solo: NADA NUEVO"
             ),
             "previous": "Respuesta basada en la reunión:",
             "extend": (
@@ -850,7 +874,8 @@ def _open_blocking(text, question, language, notes, memory, results, detail):
     if results:
         blocks.append(f"{labels['web']}\n{_web_block(results, labels)}")
     length = OPEN_LENGTH.get(language, OPEN_LENGTH["en"])[detail]
-    blocks.append(f"{labels['question']} {question}\n{labels['open_instruction']} {length}")
+    instruction = labels["open_instruction"] if results else labels["open_instruction_noweb"]
+    blocks.append(f"{labels['question']} {question}\n{instruction} {length}")
     return _generate(
         _system_prompt(language, mode="open"), "\n\n".join(blocks),
         max_tokens=ANSWER_MAX_TOKENS[detail] + 100, temp=0.4,
@@ -948,6 +973,95 @@ def extend_with_web(question, previous="", notes="", language="en", detail="long
     answer = clean_answer(_executor.submit(
         _run_extend, question, previous or "", notes or "", results, language, detail or "long"
     ).result())
+    return {"answer": answer, "sources": _sources(results)}
+
+
+# ---------- Modo Ideas en dos pasos: respuesta rápida + complemento web ----------
+#
+# 1. "ask" (modo open, sin web, con "prefetch"): la búsqueda arranca en otro
+#    hilo (solo red) mientras Qwen responde con la reunión y lo que sabe.
+# 2. "complement": usa esa búsqueda (casi siempre ya lista) y Qwen agrega solo
+#    lo que internet aporta: «Puede complementar tu pregunta».
+
+COMPLEMENT_MAX_TOKENS = {"long": 400, "short": 200}
+COMPLEMENT_LENGTH = {
+    "en": {"long": "At most about 120 words: a short paragraph or a few bullets.", "short": "1-3 sentences."},
+    "es": {"long": "Como mucho unas 120 palabras: un párrafo corto o pocas viñetas.", "short": "1-3 frases."},
+}
+PREFETCH_TIMEOUT = 40  # segundos; la búsqueda tiene sus propios límites (~20 s en el peor caso)
+_NOTHING_NEW_RE = re.compile(r"^\W*(nothing new|nada nuevo)\b", re.IGNORECASE)
+_web_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="web")
+_web_prefetch = {}
+
+
+def _prefetch_key(question, language, sites, read):
+    return ((question or "").strip(), language, str(sites or ""), int(read or 0))
+
+
+def prefetch_web(question, language="en", sites="", read=WEB_READ_PAGES, search=None):
+    """Empieza la búsqueda en segundo plano (solo red: no usa Qwen)."""
+    if search is None:
+        from web_search import search
+    key = _prefetch_key(question, language, sites, read)
+    if key in _web_prefetch:
+        return
+    while len(_web_prefetch) >= 8:  # las que nunca se usaron (p. ej. la respuesta falló)
+        _web_prefetch.pop(next(iter(_web_prefetch)))
+    _web_prefetch[key] = _web_pool.submit(search, key[0], language=language, sites=sites, read=read)
+
+
+def _web_results(question, language, sites, read, search):
+    """Resultados de la búsqueda adelantada, o una búsqueda nueva si no la hay."""
+    future = _web_prefetch.pop(_prefetch_key(question, language, sites, read), None)
+    if future is None:
+        if search is None:
+            from web_search import search
+        return search(question, language=language, sites=sites, read=read)
+    return future.result(timeout=PREFETCH_TIMEOUT)
+
+
+def _complement_blocking(question, previous, notes, results, language, detail):
+    labels = _prompts(language)["ask"]
+    detail = detail if detail in COMPLEMENT_MAX_TOKENS else "long"
+    blocks = [f"{labels['question']} {question}"]
+    previous = fit_tokens(previous, EXTEND_PREVIOUS_TOKENS, keep="head")
+    notes = fit_tokens(notes, EXTEND_NOTES_TOKENS, keep="head")
+    if notes:
+        blocks.append(f"{labels['notes']}\n{notes}")
+    if previous:
+        blocks.append(f"{labels['given']}\n{previous}")
+    blocks.append(f"{labels['web']}\n{_web_block(results, labels)}")
+    length = COMPLEMENT_LENGTH.get(language, COMPLEMENT_LENGTH["en"])[detail]
+    blocks.append(f"{labels['complement']} {length}")
+    return _generate(
+        _system_prompt(language, mode="open"), "\n\n".join(blocks),
+        max_tokens=COMPLEMENT_MAX_TOKENS[detail] + 60, temp=0.2,
+    )
+
+
+def _run_complement(question, previous, notes, results, language, detail):
+    _ensure_model()
+    return _complement_blocking(question, previous, notes, results, language, detail)
+
+
+def complement_with_web(question, previous="", notes="", language="en", detail="long", sites="",
+                        read=WEB_READ_PAGES, search=None):
+    """Lo que internet agrega a una respuesta ya dada (modo Ideas, segundo paso).
+
+    Solo la pregunta sale a internet. Devuelve {"answer", "sources"}; "answer"
+    vacío si internet no aporta nada nuevo (o no hubo resultados).
+    """
+    question = (question or "").strip()
+    if not question:
+        raise ValueError("empty question")
+    results = _web_results(question, language, sites, read, search)
+    if not results:
+        return {"answer": "", "sources": []}
+    answer = clean_answer(_executor.submit(
+        _run_complement, question, previous or "", notes or "", results, language, detail or "long"
+    ).result())
+    if _NOTHING_NEW_RE.match(answer) and len(answer) < 80:
+        answer = ""
     return {"answer": answer, "sources": _sources(results)}
 
 
@@ -1051,6 +1165,9 @@ def handle_request(request):
         memory = recall(request.get("memory_dir"), request.get("session"), question, text)
         detail = request.get("detail") or "long"
         if request.get("mode") == "open":
+            if request.get("prefetch") == "1":
+                # La búsqueda corre mientras Qwen responde; la usa "complement".
+                prefetch_web(question, language, **_web_options(request))
             reply = open_question(
                 text, question, language, request.get("notes") or "", memory, detail,
                 web=request.get("web", "1") != "0", **_web_options(request),
@@ -1067,6 +1184,11 @@ def handle_request(request):
         return {"stored": stored, "segments": len(memory.segments())}
     if kind == "extend":
         return extend_with_web(
+            request.get("question"), request.get("previous"), request.get("notes"), language,
+            request.get("detail") or "long", **_web_options(request),
+        )
+    if kind == "complement":
+        return complement_with_web(
             request.get("question"), request.get("previous"), request.get("notes"), language,
             request.get("detail") or "long", **_web_options(request),
         )

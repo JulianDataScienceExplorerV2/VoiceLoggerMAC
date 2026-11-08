@@ -29,6 +29,21 @@ struct QAItem: Identifiable, Equatable {
     var fromWeb = false
     /// Answered in "Ideas" mode (meeting + own knowledge + web).
     var brainstorm = false
+    /// Ideas mode, second step: what the web adds to the quick answer
+    /// ("Puede complementar tu pregunta"). nil = not asked; "" = nothing new.
+    var complement: String?
+    var complementLoading = false
+    /// Why the web step failed (the quick answer stays).
+    var complementError: String?
+
+    /// Answer plus its web complement, for copying and exporting.
+    var fullAnswer: String {
+        var text = answer ?? ""
+        if let complement, !complement.isEmpty {
+            text += "\n\n🌐 Puede complementar tu pregunta:\n\(complement)"
+        }
+        return text
+    }
 }
 
 /// Qwen models for the summary / questions (MLX 4-bit, downloaded once to the
@@ -942,7 +957,7 @@ final class AppState: ObservableObject {
         if !answered.isEmpty {
             md += ["", "## Preguntas y respuestas"]
             for item in answered {
-                md += ["", "### \(item.fromWeb ? "🌐 " : (item.brainstorm ? "💡 " : ""))\(item.question)", "", item.answer ?? ""]
+                md += ["", "### \(item.fromWeb ? "🌐 " : (item.brainstorm ? "💡 " : ""))\(item.question)", "", item.fullAnswer]
                 for (index, source) in item.sources.enumerated() {
                     md.append("\(index + 1). [\(source.title)](\(source.url))")
                 }
@@ -1012,6 +1027,10 @@ final class AppState: ObservableObject {
         let web = allowWebSearch
         let sites = preferredSites
         let readPages = readWebPages
+        // Ideas with internet: the model answers first with what it knows (no
+        // waiting for the web); the search runs meanwhile and its complement
+        // comes right after, under the answer.
+        let twoStep = mode == "open" && web
         Task {
             let answer: String
             let sources: [WebSource]
@@ -1019,8 +1038,8 @@ final class AppState: ObservableObject {
             do {
                 let result = try await server.ask(
                     question: question, text: context, notes: notes, session: session,
-                    memoryDir: directory, lang: lang, detail: detail, mode: mode, web: web,
-                    sites: sites, readPages: readPages
+                    memoryDir: directory, lang: lang, detail: detail, mode: mode, web: twoStep ? false : web,
+                    sites: sites, readPages: readPages, prefetchWeb: twoStep
                 )
                 answer = result.answer
                 sources = result.sources
@@ -1034,6 +1053,32 @@ final class AppState: ObservableObject {
                 self.qaItems[index].answer = answer.isEmpty ? "—" : answer
                 self.qaItems[index].sources = sources
                 self.qaItems[index].failed = failed
+                self.qaItems[index].complementLoading = twoStep && !failed
+                self.qaRevision += 1
+            }
+            guard twoStep, !failed else { return }
+
+            let extra: String?
+            let extraSources: [WebSource]
+            let extraError: String?
+            do {
+                let result = try await server.complement(
+                    question: question, previous: answer, notes: notes, lang: lang, detail: detail,
+                    sites: sites, readPages: readPages
+                )
+                extra = result.answer
+                extraSources = result.sources
+                extraError = nil
+            } catch {
+                extra = nil
+                extraSources = []
+                extraError = error.localizedDescription
+            }
+            if let index = self.qaItems.firstIndex(where: { $0.id == item.id }) {
+                self.qaItems[index].complementLoading = false
+                self.qaItems[index].complement = extra
+                self.qaItems[index].complementError = extraError
+                self.qaItems[index].sources = extraSources
                 self.qaRevision += 1
             }
         }
@@ -1744,6 +1789,42 @@ struct QARow: View {
     let fontSize: Int
     var allowWeb = true
 
+    /// Ideas mode: the web part, under the quick answer.
+    @ViewBuilder
+    private var complementView: some View {
+        if item.complementLoading {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Buscando en internet algo que complemente la respuesta…")
+                    .scaledFont(11)
+                    .foregroundStyle(.secondary)
+            }
+        } else if let extra = item.complement {
+            if extra.isEmpty {
+                Label(
+                    item.sources.isEmpty ? "No encontré nada en internet para complementar" : "Internet no agregó nada nuevo",
+                    systemImage: "globe"
+                )
+                .scaledFont(11)
+                .foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("Puede complementar tu pregunta", systemImage: "globe")
+                        .scaledFont(11, weight: .bold)
+                        .foregroundStyle(Theme.qa)
+                    MarkdownText(markdown: extra, fontSize: fontSize - 1, accent: Theme.qa)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Theme.qa.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+        } else if let error = item.complementError {
+            Label("No se pudo complementar con internet: \(error)", systemImage: "exclamationmark.triangle")
+                .scaledFont(11)
+                .foregroundStyle(Color.orange)
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if item.fromWeb {
@@ -1763,9 +1844,9 @@ struct QARow: View {
                     .font(.system(size: CGFloat(fontSize), weight: .semibold))
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                if let answer = item.answer, !item.failed {
+                if item.answer != nil, !item.failed {
                     IconButton(systemImage: "doc.on.doc", help: "Copiar pregunta y respuesta") {
-                        AppState.shared.copyText("\(item.question)\n\n\(answer)", message: "Respuesta copiada")
+                        AppState.shared.copyText("\(item.question)\n\n\(item.fullAnswer)", message: "Respuesta copiada")
                     }
                 }
             }
@@ -1778,6 +1859,7 @@ struct QARow: View {
                     } else {
                         VStack(alignment: .leading, spacing: 8) {
                             MarkdownText(markdown: answer, fontSize: fontSize, accent: Theme.qa)
+                            complementView
                             if !item.sources.isEmpty {
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text("Fuentes").scaledFont(10, weight: .bold).foregroundStyle(.secondary)
@@ -1826,7 +1908,7 @@ struct QARow: View {
                 } else {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
-                        Text(item.fromWeb || (item.brainstorm && allowWeb) ? "Buscando en internet y pensando…" : "Pensando…")
+                        Text(item.fromWeb ? "Buscando en internet y pensando…" : "Pensando…")
                             .foregroundStyle(.secondary)
                     }
                 }

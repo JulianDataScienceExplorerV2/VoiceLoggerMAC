@@ -200,6 +200,10 @@ Junto a la caja de preguntas eliges cómo responde la IA:
   resultados de internet**; propone opciones, ejemplos y próximos pasos, separa lo dicho en la reunión del
   conocimiento general y cita las fuentes web [1], [2]. Sin internet (o con el permiso apagado) responde igual con
   la reunión y lo que sabe.
+  **En dos pasos, para no esperar:** Qwen responde **primero** con la reunión y lo que sabe; mientras escribe, la
+  búsqueda en internet ya está corriendo (es solo red, no usa la IA). Al terminar aparece debajo
+  **«🌐 Puede complementar tu pregunta»** con lo que internet agrega (datos, cifras, ejemplos o correcciones, sin
+  repetir) y sus fuentes. Si internet no aporta nada (p. ej. «¿cuánto es 2 + 2?»), lo dice en una línea.
 - **📋 Reunión:** responde **solo** con lo que se dijo; si no está, lo dice.
 
 El modo por defecto se cambia en ⚙. A internet solo sale el texto de la pregunta.

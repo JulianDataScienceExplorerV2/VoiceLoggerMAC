@@ -136,14 +136,18 @@ actor QwenServer {
     /// adds the model's own knowledge and, if `web`, web results (only the
     /// question text is searched). `sites`: preferred sites, searched with
     /// `site:`; `readPages`: open the best pages instead of only the snippets.
+    /// `prefetchWeb`: start the web search now, in the background, for a later
+    /// `complement` (Ideas mode answers first and complements afterwards).
     func ask(
         question: String, text: String, notes: String, session: String, memoryDir: String,
-        lang: String, detail: String, mode: String, web: Bool, sites: String, readPages: Bool
+        lang: String, detail: String, mode: String, web: Bool, sites: String, readPages: Bool,
+        prefetchWeb: Bool = false
     ) async throws -> (answer: String, sources: [WebSource]) {
         let data = try await send([
             "type": "ask", "question": question, "text": text, "notes": notes,
             "session": session, "memory_dir": memoryDir, "lang": lang, "detail": detail,
             "mode": mode, "web": web ? "1" : "0", "sites": sites, "read": readPages ? "1" : "0",
+            "prefetch": prefetchWeb ? "1" : "0",
         ])
         let result = try JSONDecoder().decode(Envelope<Answer>.self, from: data).result
         return (result.answer.trimmingCharacters(in: .whitespacesAndNewlines), result.sources ?? [])
@@ -157,6 +161,21 @@ actor QwenServer {
     ) async throws -> (answer: String, sources: [WebSource]) {
         let data = try await send([
             "type": "extend", "question": question, "previous": previous, "notes": notes,
+            "lang": lang, "detail": detail, "sites": sites, "read": readPages ? "1" : "0",
+        ])
+        let result = try JSONDecoder().decode(Envelope<Extended>.self, from: data).result
+        return (result.answer.trimmingCharacters(in: .whitespacesAndNewlines), result.sources)
+    }
+
+    /// Ideas mode, second step: what the web adds to an answer already given
+    /// ("Puede complementar tu pregunta"). Uses the search started by `ask`
+    /// with `prefetchWeb`. Empty answer = the web added nothing new.
+    func complement(
+        question: String, previous: String, notes: String, lang: String, detail: String,
+        sites: String, readPages: Bool
+    ) async throws -> (answer: String, sources: [WebSource]) {
+        let data = try await send([
+            "type": "complement", "question": question, "previous": previous, "notes": notes,
             "lang": lang, "detail": detail, "sites": sites, "read": readPages ? "1" : "0",
         ])
         let result = try JSONDecoder().decode(Envelope<Extended>.self, from: data).result
