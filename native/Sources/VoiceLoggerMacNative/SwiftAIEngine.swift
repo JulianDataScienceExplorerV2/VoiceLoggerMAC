@@ -328,7 +328,26 @@ actor SwiftAIEngine: AIEngine {
     // MARK: Internet
 
     private func search(_ question: String, lang: String, sites: String, read: Int) async throws -> [WebResult] {
-        try await WebSearch.search(question, language: lang, limit: Self.webResults, sites: sites, read: read)
+        try await Self.loggedSearch(question, lang: lang, sites: sites, read: read)
+    }
+
+    /// The search plus one log line: results, reliable ones, pages read, time
+    /// (not the question text).
+    private static func loggedSearch(_ question: String, lang: String, sites: String, read: Int) async throws -> [WebResult] {
+        let started = Date()
+        do {
+            let results = try await WebSearch.search(question, language: lang, limit: Self.webResults, sites: sites, read: read)
+            SessionLog.shared.log(
+                "WEB", "\(results.count) resultados (\(results.filter(\.trusted).count) confiables, "
+                    + "\(results.filter { $0.content != nil }.count) páginas leídas) en "
+                    + "\(SessionLog.seconds(Date().timeIntervalSince(started))) · dominios: "
+                    + results.map { WebSearch.hostOf($0.url) }.joined(separator: ", ")
+            )
+            return results
+        } catch {
+            SessionLog.shared.log("ERROR", "búsqueda web: \(error.localizedDescription)")
+            throw error
+        }
     }
 
     private func prefetchKey(_ question: String, _ lang: String, _ sites: String, _ read: Int) -> String {
@@ -345,7 +364,7 @@ actor SwiftAIEngine: AIEngine {
             prefetched.removeValue(forKey: old)?.cancel()
         }
         prefetched[key] = Task {
-            try await WebSearch.search(question, language: lang, limit: Self.webResults, sites: sites, read: read)
+            try await Self.loggedSearch(question, lang: lang, sites: sites, read: read)
         }
         prefetchOrder.append(key)
     }

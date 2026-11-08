@@ -105,6 +105,7 @@ actor LocalLLM {
     @discardableResult
     func unload() -> Bool {
         let wasLoaded = container != nil || loading != nil
+        if wasLoaded { SessionLog.shared.log("IA", "modelo liberado de la memoria") }
         loading?.cancel()
         loading = nil
         container = nil
@@ -127,6 +128,8 @@ actor LocalLLM {
         Memory.cacheLimit = Self.cacheLimitBytes
         let id = modelID
         let configuration = ModelConfiguration(id: id)
+        let started = Date()
+        SessionLog.shared.log("IA", "Swift: cargando \(id)…")
         let task = Task { try await #huggingFaceLoadModelContainer(configuration: configuration) }
         loading = task
         do {
@@ -134,9 +137,14 @@ actor LocalLLM {
             guard id == modelID else { throw CancellationError() }  // the model changed while loading
             container = loaded
             loading = nil
+            SessionLog.shared.log(
+                "IA", "Swift: \(id) listo en \(SessionLog.seconds(Date().timeIntervalSince(started))) · "
+                    + "MLX \(Self.megabytes(Memory.activeMemory)) MB · app \(SessionLog.memoryMB()) MB"
+            )
             return loaded
         } catch {
             if id == modelID { loading = nil }
+            SessionLog.shared.log("ERROR", "Swift: no se pudo cargar \(id): \(error.localizedDescription)")
             throw error
         }
     }
@@ -147,13 +155,19 @@ actor LocalLLM {
         guard useDraft, !draftUnavailable, let id = Self.draftModels[modelID] else { return nil }
         if let draft { return draft }
         let main = modelID
+        let started = Date()
         do {
             let loaded = try await #huggingFaceLoadModelContainer(configuration: ModelConfiguration(id: id))
             guard main == modelID, useDraft else { return nil }
             draft = loaded
+            SessionLog.shared.log(
+                "IA", "ayudante \(id) listo en \(SessionLog.seconds(Date().timeIntervalSince(started))) "
+                    + "(decodificación especulativa, \(Self.numDraftTokens) tokens por paso)"
+            )
             return loaded
         } catch {
             if main == modelID { draftUnavailable = true }
+            SessionLog.shared.log("IA", "ayudante \(id) no disponible, sigue sin él: \(error.localizedDescription)")
             return nil
         }
     }
@@ -202,25 +216,31 @@ actor LocalLLM {
     /// one-token reply; nil if that fails (the caller then starts from scratch).
     private func prefixSession(
         system: String, container: ModelContainer, speculative: SpeculativeDecodingConfig?
-    ) async -> ChatSession? {
+    ) async -> (session: ChatSession, reused: Bool)? {
         let key = "\(speculative != nil)\u{1F}\(system)"
         if let index = prefixes.firstIndex(where: { $0.key == key }) {
             let entry = prefixes.remove(at: index)
             prefixes.append(entry)  // most recently used last
-            return entry.session
+            return (entry.session, true)
         }
         let base = newSession(
             container, system: system, speculative: speculative,
             parameters: makeParameters(maxTokens: 1, temperature: 0, penalizeRepeats: false)
         )
+        let started = Date()
         do {
             _ = try await base.respond(to: "OK")
         } catch {
+            SessionLog.shared.log("IA", "caché del prompt no disponible: \(error.localizedDescription)")
             return nil
         }
         prefixes.append((key, base))
         if prefixes.count > Self.maxCachedPrefixes { prefixes.removeFirst() }
-        return base
+        SessionLog.shared.log(
+            "IA", "caché del prompt: variante nueva (\(system.count) car de instrucciones) preparada en "
+                + SessionLog.seconds(Date().timeIntervalSince(started))
+        )
+        return (base, false)
     }
 
     /// One answer: `system` + `user` → text without reasoning or code fences.
@@ -242,13 +262,17 @@ actor LocalLLM {
                 // One request = system prompt + one user message, as in Python.
                 // The system prompt comes from the prefilled cache when there is one.
                 let session: ChatSession
-                if let base = await prefixSession(system: system, container: container, speculative: speculative) {
-                    session = await base.fork(history: [])
+                let prefix: String
+                if let prefixed = await prefixSession(system: system, container: container, speculative: speculative) {
+                    session = await prefixed.session.fork(history: [])
                     session.generateParameters = params
+                    prefix = prefixed.reused ? "reutilizado" : "nuevo"
                 } else {
                     session = newSession(container, system: system, speculative: speculative, parameters: params)
+                    prefix = "no"
                 }
-                return try await stream(session, user: user, partial: partial)
+                let mode = "ayudante \(speculative == nil ? "no" : "sí") · prefijo \(prefix) · KV 8 bits desde \(Self.quantizedKVStart)"
+                return try await stream(session, user: user, container: container, mode: mode, partial: partial)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -256,6 +280,9 @@ actor LocalLLM {
                 safeMode = true
                 prefixes = []
                 draft = nil
+                SessionLog.shared.log(
+                    "ERROR", "una optimización falló (\(error.localizedDescription)): modo normal para este modelo"
+                )
             }
         }
         let plain = newSession(
@@ -264,22 +291,45 @@ actor LocalLLM {
                 maxTokens: maxTokens, temperature: temperature, penalizeRepeats: penalizeRepeats, quantizeKV: false
             )
         )
-        return try await stream(plain, user: user, partial: partial)
+        return try await stream(plain, user: user, container: container, mode: "modo normal", partial: partial)
     }
 
-    private func stream(_ session: ChatSession, user: String, partial: PartialText?) async throws -> String {
+    private func stream(
+        _ session: ChatSession, user: String, container: ModelContainer, mode: String, partial: PartialText?
+    ) async throws -> String {
+        let started = ContinuousClock.now
+        var firstWord: Duration?
         var output = ""
-        var lastUpdate = ContinuousClock.now
+        var lastUpdate = started
         for try await chunk in session.streamResponse(to: user, role: .user) {
+            if firstWord == nil, !chunk.isEmpty { firstWord = ContinuousClock.now - started }
             output += chunk
             if let partial, ContinuousClock.now - lastUpdate >= Self.partialInterval {
                 lastUpdate = .now
                 partial(AIText.stripCodeFence(AIText.stripThinking(output)))
             }
         }
+        let total = Self.seconds(ContinuousClock.now - started)
         let result = AIText.stripCodeFence(AIText.stripThinking(output))
         partial?(result)
+        let tokens = await container.encode(output).count
+        let writing = max(total - Self.seconds(firstWord ?? .zero), 0.001)
+        SessionLog.shared.log(
+            "IA", String(format: "%ld tokens en %@ (%.0f tok/s escribiendo) · 1.ª palabra %@ · prompt %ld car · %@ · "
+                + "MLX %ld MB (pico %ld MB)",
+                tokens, SessionLog.seconds(total), Double(tokens) / writing,
+                SessionLog.seconds(Self.seconds(firstWord ?? .zero)), user.count, mode,
+                Self.megabytes(Memory.activeMemory), Self.megabytes(Memory.peakMemory))
+        )
         return result
+    }
+
+    private static func seconds(_ duration: Duration) -> Double {
+        Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18
+    }
+
+    private static func megabytes(_ bytes: Int) -> Int {
+        bytes / 1_048_576
     }
 
     /// Token count with the model's tokenizer (an estimate if it is not loaded).

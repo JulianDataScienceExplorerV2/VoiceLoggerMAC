@@ -1,3 +1,4 @@
+import CoreML
 import Foundation
 import WhisperKit
 
@@ -49,9 +50,27 @@ public final class WhisperKitTranscriber: Transcriber, @unchecked Sendable {
     private let pipe: WhisperKit
     private let gate = AsyncSemaphore()
 
+    /// Where each part runs: the encoder and decoder on the Neural Engine
+    /// (WhisperKit's default) and the small mel spectrogram on the CPU instead
+    /// of the GPU, so the GPU stays free for the AI (MLX) and live transcription
+    /// does not slow down while the AI writes.
+    static let computeOptions = ModelComputeOptions(
+        melCompute: .cpuOnly, audioEncoderCompute: .cpuAndNeuralEngine, textDecoderCompute: .cpuAndNeuralEngine
+    )
+    /// Retries at higher temperature when a block fails Whisper's quality checks
+    /// (default 5): each one is a whole new decode, so 5 could add seconds on
+    /// music or noise. Empty blocks have their own rescue in the app.
+    static let temperatureFallbackCount = 2
+
     public init(model: String? = nil) async throws {
         let name = model ?? ProcessInfo.processInfo.environment["VOICELOGGER_MODEL"] ?? Self.defaultModel
-        self.pipe = try await WhisperKit(WhisperKitConfig(model: name, verbose: false))
+        let started = Date()
+        SessionLog.shared.log("WHISPER", "cargando \(name)…")
+        self.pipe = try await WhisperKit(WhisperKitConfig(model: name, computeOptions: Self.computeOptions, verbose: false))
+        SessionLog.shared.log(
+            "WHISPER", "\(name) listo en \(SessionLog.seconds(Date().timeIntervalSince(started))) · "
+                + "mel CPU, codificador y decodificador en Neural Engine · memoria app \(SessionLog.memoryMB()) MB"
+        )
     }
 
     public func transcribe(_ audio: [Float], language: String, prompt: String?, relaxed: Bool) async throws -> (text: String, language: String) {
@@ -59,6 +78,12 @@ public final class WhisperKitTranscriber: Transcriber, @unchecked Sendable {
         defer { gate.signal() }
         let lang: String? = (language == "auto" || language.isEmpty) ? nil : language
         var options = DecodingOptions(language: lang, detectLanguage: lang == nil)
+        // Blocks are short (≤ 12 s) and only their text is used: no timestamp
+        // tokens to decode (also the cause of some empty blocks in the
+        // diagnostics: Whisper predicted a timestamp and stopped).
+        options.withoutTimestamps = true
+        options.skipSpecialTokens = true
+        options.temperatureFallbackCount = Self.temperatureFallbackCount
         if let prompt, !prompt.isEmpty, let tokenizer = pipe.tokenizer {
             // Same recipe as WhisperKit's CLI: text tokens only, no special tokens.
             options.promptTokens = tokenizer.encode(text: " " + prompt)
@@ -77,6 +102,17 @@ public final class WhisperKitTranscriber: Transcriber, @unchecked Sendable {
         }
         let results = try await pipe.transcribe(audioArray: audio, decodeOptions: options)
         let text = results.map(\.text).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        if let timings = results.first?.timings {
+            let audioSeconds = Double(audio.count) / 16000
+            SessionLog.shared.log(
+                "WHISPER", String(format: "%.1f s de audio en %@ (×%.0f tiempo real) · codificar %@ · decodificar %@ · "
+                    + "reintentos %.0f · %@%@",
+                    audioSeconds, SessionLog.seconds(timings.fullPipeline),
+                    timings.fullPipeline > 0 ? audioSeconds / timings.fullPipeline : 0,
+                    SessionLog.seconds(timings.encoding), SessionLog.seconds(timings.decodingLoop),
+                    timings.totalDecodingFallbacks, relaxed ? "rescate" : "normal", text.isEmpty ? " · VACÍO" : "")
+            )
+        }
         let detected = results.first?.language ?? (lang ?? "en")
         return (text, detected)
     }

@@ -311,6 +311,7 @@ final class AppState: ObservableObject {
 
     init() {
         load()
+        SessionLog.shared.begin("app abierta", settings: sessionSettings())
         capture.onAudio = { [weak self] samples in
             guard let self else { return }
             if self.isPaused { return }
@@ -391,7 +392,29 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Settings written at the top of each session log.
+    private func sessionSettings() -> [String: String] {
+        [
+            "whisper": modelName, "idioma": language, "velocidad texto": liveSpeed,
+            "motor IA": aiEngine, "modelo IA": qwenModel, "ayudante (especulativa)": speculativeDecoding ? "sí" : "no",
+            "resumen cada": liveInterval == 0 ? "al final" : "\(liveInterval) s",
+            "preguntas cada": questionsInterval == 0 ? "con el resumen" : "\(questionsInterval) s",
+            "respuestas": "\(answerMode == "open" ? "Ideas" : "Reunión"), \(longAnswers ? "largas" : "cortas")",
+            "internet": allowWebSearch ? "sí (leer páginas: \(readWebPages ? "sí" : "no"))" : "no",
+            "idioma IA": summaryLang,
+        ]
+    }
+
+    func openSessionLog() {
+        if let url = SessionLog.shared.url {
+            NSWorkspace.shared.open(url)
+        } else {
+            openLogsFolder()
+        }
+    }
+
     func toast(_ message: String, kind: String = "info") {
+        if kind == "error" { SessionLog.shared.log("ERROR", message) }
         withAnimation(.easeOut(duration: 0.2)) {
             toastMessage = message
             toastKind = kind
@@ -443,6 +466,8 @@ final class AppState: ObservableObject {
         }
         do {
             try await capture.start()
+            SessionLog.shared.begin("reunión iniciada", settings: sessionSettings())
+            SessionLog.shared.log("APP", "escuchando · memoria app \(SessionLog.memoryMB()) MB")
             isListening = true
             isPaused = false
             status = "Escuchando..."
@@ -468,6 +493,10 @@ final class AppState: ObservableObject {
         status = "Detenido"
         metrics.level = 0
         stopTimer()
+        SessionLog.shared.log(
+            "APP", "reunión detenida · \(metrics.elapsed) · \(entries.count) bloques · \(wordCount) palabras · "
+                + "\(questionHistory.count) preguntas · memoria app \(SessionLog.memoryMB()) MB"
+        )
         // Final summary with the last part of the meeting (the only one with "Solo al final").
         if autoSummary, hasUnsummarizedText, !entries.isEmpty {
             refreshSummary()
@@ -582,6 +611,8 @@ final class AppState: ObservableObject {
     private func handlePhrase(_ audio: [Float], timestamp ts: String) async {
         pendingTranscriptions += 1
         defer { pendingTranscriptions -= 1 }
+        let blockStarted = Date()
+        let waitingBefore = pendingTranscriptions - 1
         do {
             let transcriber = try await ensureTranscriber()
             status = "Transcribiendo..."
@@ -616,6 +647,13 @@ final class AppState: ObservableObject {
             ]
             if let firstRaw { diagnostic["raw_first_try"] = firstRaw }
             logger.diagnostic(diagnostic)
+            SessionLog.shared.log(
+                "BLOQUE", String(format: "%.1f s · %@ · %@ · %ld palabras · listo en %@%@",
+                    seconds, attempts.joined(separator: "+"), diagnostic["result"] ?? "",
+                    text.map { $0.split(whereSeparator: \.isWhitespace).count } ?? 0,
+                    SessionLog.seconds(Date().timeIntervalSince(blockStarted)),
+                    waitingBefore > 0 ? " · \(waitingBefore) en cola" : "")
+            )
             if let text {
                 logger.log(text: text, model: "whisperkit:\(modelName)", lang: lang, timestamp: ts)
                 appendEntry(text: text, lang: lang, timestamp: ts)
@@ -703,6 +741,11 @@ final class AppState: ObservableObject {
         guard let start = sessionStart else { return }
         let elapsed = Int(Date().timeIntervalSince(start))
         metrics.elapsed = String(format: "%02d:%02d:%02d", elapsed / 3600, (elapsed % 3600) / 60, elapsed % 60)
+        if elapsed > 0, elapsed % 60 == 0 {
+            SessionLog.shared.log(
+                "MEMORIA", "app \(SessionLog.memoryMB()) MB · \(pendingTranscriptions) bloques esperando a Whisper"
+            )
+        }
         // Also checked every second so the last phrases get summarized even
         // when nobody speaks for a while, and failed memory writes are retried.
         rememberPendingSegments()
@@ -771,6 +814,7 @@ final class AppState: ObservableObject {
             _ = await old?.unload()
             if self.isListening, self.autoSummary { self.warmUpAI() }
         }
+        SessionLog.shared.log("IA", "motor cambiado a \(aiEngine)")
         toast(aiEngine == "swift"
               ? "Motor de IA: Swift nativo (beta). Usa los mismos modelos; se carga en la próxima respuesta."
               : "Motor de IA: Python.")
@@ -795,11 +839,15 @@ final class AppState: ObservableObject {
     private func warmUpAI() {
         guard !isWarmingAI, let server = resolveServer() else { return }
         isWarmingAI = true
+        let started = Date()
+        let engineName = aiEngine
         Task {
             do {
                 try await server.warmup()
+                SessionLog.shared.log("IA", "\(engineName): modelo cargado en \(SessionLog.seconds(Date().timeIntervalSince(started)))")
             } catch {
                 self.summaryError = error.localizedDescription
+                SessionLog.shared.log("ERROR", "IA al cargar el modelo: \(error.localizedDescription)")
             }
             self.isWarmingAI = false
         }
@@ -844,8 +892,18 @@ final class AppState: ObservableObject {
         let generation = aiGeneration
         let mark = transcriptChars
         isFindingQuestions = true
+        let started = Date()
         Task {
-            let found = try? await server.questions(text: recent, known: known, lang: lang)
+            let found: [String]?
+            do {
+                found = try await server.questions(text: recent, known: known, lang: lang)
+                SessionLog.shared.log(
+                    "IA", "preguntas en vivo: \(found?.count ?? 0) nuevas en \(SessionLog.seconds(Date().timeIntervalSince(started)))"
+                )
+            } catch {
+                found = nil
+                SessionLog.shared.log("ERROR", "preguntas en vivo: \(error.localizedDescription)")
+            }
             self.isFindingQuestions = false
             self.lastQuestionsAt = Date()
             guard generation == self.aiGeneration, let found else { return }  // errors: retried next time
@@ -900,6 +958,8 @@ final class AppState: ObservableObject {
         isSummarizing = true
         summaryError = nil
         hasUnsummarizedText = false
+        let started = Date()
+        let kind = rebuild ? "completo (\(fullText.count) car)" : "incremental (\(delta.count) car nuevos)"
         Task {
             let outcome: Result<LiveInsights, Error>
             do {
@@ -911,6 +971,15 @@ final class AppState: ObservableObject {
             }
             self.isSummarizing = false
             self.lastSummaryAt = Date()
+            switch outcome {
+            case .success(let insights):
+                SessionLog.shared.log(
+                    "IA", "resumen \(kind) en \(SessionLog.seconds(Date().timeIntervalSince(started))) · "
+                        + "\(insights.questions.count) preguntas · \(insights.actionItems.count) tareas"
+                )
+            case .failure(let error):
+                SessionLog.shared.log("ERROR", "resumen \(kind): \(error.localizedDescription)")
+            }
             guard generation == self.aiGeneration else { return }
             switch outcome {
             case .success(let insights):
@@ -1035,9 +1104,11 @@ final class AppState: ObservableObject {
         let lang = summaryLang
         let today = Self.isoDay()
         let generation = aiGeneration
+        let started = Date()
         Task {
             do {
                 let tasks = try await server.tasks(notes: notes, text: recent, lang: lang, today: today)
+                SessionLog.shared.log("IA", "tareas: \(tasks.count) en \(SessionLog.seconds(Date().timeIntervalSince(started)))")
                 self.isExtractingTasks = false
                 guard generation == self.aiGeneration else { return }
                 if tasks.isEmpty {
@@ -1213,6 +1284,12 @@ final class AppState: ObservableObject {
                 self.qaItems[index].complementLoading = twoStep && !failed
                 self.qaItems[index].elapsed = Date().timeIntervalSince(started)
                 self.qaItems[index].engine = engineName
+                SessionLog.shared.log(
+                    failed ? "ERROR" : "IA",
+                    "respuesta \(mode == "open" ? "Ideas" : "Reunión") (\(engineName)) en "
+                        + "\(SessionLog.seconds(Date().timeIntervalSince(started)))"
+                        + (failed ? ": \(answer)" : " · \(answer.count) car · \(sources.count) fuentes")
+                )
                 self.qaRevision += 1
             }
             guard twoStep, !failed else { return }
@@ -1233,6 +1310,19 @@ final class AppState: ObservableObject {
                 extraSources = []
                 extraError = error.localizedDescription
             }
+            let extraSummary: String
+            if let extraError {
+                extraSummary = ": \(extraError)"
+            } else if let extra, !extra.isEmpty {
+                extraSummary = " · \(extra.count) car · \(extraSources.count) fuentes"
+            } else {
+                extraSummary = " · nada nuevo · \(extraSources.count) fuentes"
+            }
+            SessionLog.shared.log(
+                extraError == nil ? "IA" : "ERROR",
+                "complemento de internet listo a los \(SessionLog.seconds(Date().timeIntervalSince(started))) de preguntar"
+                    + extraSummary
+            )
             if let index = self.qaItems.firstIndex(where: { $0.id == item.id }) {
                 self.qaItems[index].complementLoading = false
                 self.qaItems[index].complement = extra
@@ -2384,6 +2474,7 @@ struct FullView: View {
             Button("Copiar transcripción", systemImage: "doc.on.doc") { state.copyAll() }
             Button("Exportar reunión (Markdown)…", systemImage: "square.and.arrow.up") { state.exportMarkdown() }
             Button("Tareas → Recordatorios…", systemImage: "checklist") { state.extractTasks() }
+            Button("Abrir log de la sesión", systemImage: "doc.text.magnifyingglass") { state.openSessionLog() }
             Button("Abrir carpeta de logs", systemImage: "folder") { state.openLogsFolder() }
             Button("Elegir modelos…", systemImage: "cpu") { state.showModelPicker = true }
             Button("Ayuda con permisos…", systemImage: "lock.shield") { state.showPermissionHelp() }
@@ -2873,6 +2964,11 @@ struct FullView: View {
                     .help("Partes antiguas de la reunión guardadas en disco; la IA trae solo las relevantes al responder")
             }
             Spacer()
+            Button { state.openSessionLog() } label: {
+                Label("Log de la sesión", systemImage: "doc.text.magnifyingglass")
+            }
+            .buttonStyle(.plain)
+            .help("Tiempos de Whisper y de la IA, memoria y errores de esta sesión (sin el texto de la reunión)")
             Button { state.openLogsFolder() } label: {
                 Label("Logs locales", systemImage: "folder")
             }
@@ -3319,6 +3415,7 @@ struct SessionCommands: Commands {
                 .keyboardShortcut("e", modifiers: .command)
             Button("Tareas → Recordatorios…") { AppState.shared.extractTasks() }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
+            Button("Abrir log de la sesión") { AppState.shared.openSessionLog() }
             Button("Leer respuestas en grande") { AppState.shared.toggleReading() }
                 .keyboardShortcut("l", modifiers: [.command, .shift])
             Divider()

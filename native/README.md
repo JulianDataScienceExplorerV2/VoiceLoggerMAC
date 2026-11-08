@@ -49,6 +49,10 @@ botones y ajustes; *Letra de lectura* (A- / A+) agranda transcripción, resumen 
 - **Cortes en el silencio:** una frase termina tras una pausa, o al llegar al máximo (5/8/12 s según la velocidad);
   en ese caso se corta en el momento más silencioso de su último 1,5 s, entre palabras, y el resto empieza la frase
   siguiente: no se pierde audio ni se parten palabras.
+- **Whisper afinado para ir en paralelo con la IA:** codificador y decodificador en el Neural Engine y el espectrograma
+  en la CPU (no en la GPU), así la transcripción no se frena mientras la IA escribe en la GPU; sin marcas de tiempo
+  (los bloques son cortos y solo se usa el texto: menos tokens y menos bloques vacíos) y como mucho 2 reintentos a
+  más temperatura por bloque (antes 5: en música o ruido podían sumar segundos).
 - **Contexto para Whisper:** recibe la frase anterior y tu **vocabulario** (⚙ → Vocabulario: nombres, productos,
   siglas) para escribir bien los nombres y no perder el hilo.
 - **Bloques vacíos (rescate):** si Whisper devuelve solo «[Music]» o nada en un bloque de 2 s o más, se reintenta
@@ -259,6 +263,26 @@ modelo pequeño pueden fallar: revisa las fuentes.
   Necesita la app empaquetada (macOS exige la descripción de permiso en el Info.plist); con `swift run` puedes copiarlas.
 - ⋯ → **Exportar reunión (Markdown)…** (⌘E): resumen, preguntas clave, tareas, preguntas y respuestas y transcripción.
   Se abre tal cual en Obsidian y se importa en Notion.
+
+## Log de la sesión
+
+Cada vez que abres la app y cada vez que pulsas **Iniciar** se crea `logs/sesion_AAAA-MM-DD_HH-mm-ss.log`
+(⋯ → *Abrir log de la sesión*, o «Log de la sesión» abajo a la derecha). Arriba van el Mac (chip, RAM, macOS) y
+los ajustes; después, una línea por evento:
+
+```
+10:42:03.120 [WHISPER] 7.8 s de audio en 640 ms (×12 tiempo real) · codificar 180 ms · decodificar 410 ms · reintentos 0 · normal
+10:42:03.125 [BLOQUE] 7.8 s · normal · ok · 21 palabras · listo en 655 ms
+10:42:10.402 [IA] 214 tokens en 4.31 s (58 tok/s escribiendo) · 1.ª palabra 520 ms · prompt 1630 car · ayudante sí · prefijo reutilizado · …
+10:42:10.410 [IA] respuesta Ideas (Swift) en 4.40 s · 1187 car · 0 fuentes
+10:42:14.900 [WEB] 6 resultados (3 confiables, 3 páginas leídas) en 2.85 s · dominios: react.dev, …
+10:43:00.001 [MEMORIA] app 5210 MB · 0 bloques esperando a Whisper
+```
+
+Registra tiempos de Whisper (por bloque y reintentos), de cada petición a la IA (resumen, preguntas, respuestas,
+complemento, tareas), carga de modelos, uso del ayudante y de la caché del prompt, búsquedas web, memoria cada minuto
+y errores. **No guarda lo que se dice en la reunión** (ni transcripción, ni preguntas, ni respuestas): solo tiempos,
+tamaños y conteos, así se puede compartir para depurar.
 
 ## Motor de IA: Python o Swift nativo (beta)
 
