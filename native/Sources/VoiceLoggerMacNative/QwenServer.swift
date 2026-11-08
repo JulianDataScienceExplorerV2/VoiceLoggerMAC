@@ -54,13 +54,26 @@ actor QwenServer {
 
     private let bridge: PythonBridge
     private let logURL: URL
+    private var model: String
     private var process: Process?
     private var input: FileHandle?
     private var pending: [String: CheckedContinuation<Data, Error>] = [:]
 
-    init(bridge: PythonBridge, logURL: URL) {
+    init(bridge: PythonBridge, logURL: URL, model: String) {
         self.bridge = bridge
         self.logURL = logURL
+        self.model = model
+    }
+
+    /// Stops the current process; the next request starts one with `newModel`.
+    func setModel(_ newModel: String) {
+        guard newModel != model else { return }
+        model = newModel
+        try? input?.close()
+        process?.terminate()
+        process = nil
+        input = nil
+        failPending(reason: "Se cambió el modelo de IA; vuelve a intentarlo.")
     }
 
     /// Loads Qwen ahead of time so the first live summary is quick.
@@ -117,6 +130,7 @@ actor QwenServer {
         environment["PYTHONIOENCODING"] = "utf-8"
         environment["PYTHONUNBUFFERED"] = "1"
         environment["TOKENIZERS_PARALLELISM"] = "false"
+        environment["VOICELOGGER_QWEN_MODEL"] = model
         process.environment = environment
 
         let stdinPipe = Pipe()

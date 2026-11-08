@@ -207,6 +207,19 @@ def _tail_text(text, max_chars, language="es"):
     return _prompts(language)["trimmed"] + "\n" + tail
 
 
+_THINK_RE = re.compile(r"<think>.*?</think>", re.S)
+
+
+def _strip_thinking(result):
+    """Quita el razonamiento <think>…</think> de modelos como Qwen3/Qwen3.5."""
+    result = _THINK_RE.sub("", result or "")
+    if "</think>" in result:  # la plantilla abrió <think> en el prompt: solo llega el cierre
+        result = result.split("</think>", 1)[1]
+    if "<think>" in result:  # razonamiento cortado por max_tokens
+        result = result.split("<think>", 1)[0]
+    return result.strip()
+
+
 def _strip_code_fence(result):
     result = result.strip()
     if result.startswith("```"):
@@ -228,7 +241,12 @@ def _generate(system, user, max_tokens, temp=0.3):
         {"role": "user", "content": user},
     ]
     prompt = _tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+        # Qwen3/Qwen3.5 "piensan" por defecto: en vivo solo añade latencia.
+        # Las plantillas que no usan esta variable (Qwen2.5) la ignoran.
+        enable_thinking=False,
     )
     result = generate(
         _model,
@@ -238,7 +256,7 @@ def _generate(system, user, max_tokens, temp=0.3):
         sampler=make_sampler(temp=temp),
         verbose=False,
     )
-    return _strip_code_fence(result)
+    return _strip_code_fence(_strip_thinking(result))
 
 
 def _minutes_prompt(text, language="es"):

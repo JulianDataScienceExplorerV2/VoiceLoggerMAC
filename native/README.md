@@ -35,7 +35,10 @@ Versión nativa para macOS en SwiftUI, conviviendo con la app Python/PySide6 de 
 └──────────────────────────────────────┴───────────────────────────────────┘
 ```
 
-Atajos: ⌘↩ iniciar/detener · ⌘⇧P pausar · ⌘S guardar TXT · ⌘⇧C copiar · ⌘R actualizar resumen · ⌘F filtrar · ⌘+ / ⌘- tamaño de letra.
+Atajos: ⌘↩ iniciar/detener · ⌘⇧P pausar · ⌘S guardar TXT · ⌘⇧C copiar · ⌘R actualizar resumen · ⌘F filtrar · ⌘+ / ⌘- letra de lectura · ⌘⌥+ / ⌘⌥- tamaño de toda la interfaz.
+
+Tamaño: ⚙ → *Tamaño de la interfaz* (Normal / Grande / Muy grande / Enorme) agranda barra, cabeceras,
+botones y ajustes; *Letra de lectura* (A- / A+) agranda transcripción, resumen y respuestas.
 
 ## IA en vivo: resumen + preguntas clave (Qwen local)
 
@@ -53,7 +56,16 @@ Atajos: ⌘↩ iniciar/detener · ⌘⇧P pausar · ⌘S guardar TXT · ⌘⇧C 
 - Whisper también se precarga al abrir la app; los archivos de ambos modelos ya quedan en la
   caché de disco tras la primera descarga.
 - Respuestas en **inglés** por defecto (⚙ → *Idioma de las respuestas*).
-- Otro modelo, si tienes RAM: `VOICELOGGER_QWEN_MODEL=mlx-community/Qwen2.5-3B-Instruct-4bit`.
+- **Modelo de IA** en ⚙ (se descarga la primera vez y se reinicia el proceso Qwen):
+
+  | Opción | Repo | Descarga aprox. | Para qué |
+  |---|---|---|---|
+  | Qwen2.5 1.5B (por defecto) | `mlx-community/Qwen2.5-1.5B-Instruct-4bit` | ~0.9 GB | ligero, rápido |
+  | Qwen3 4B 2507 | `mlx-community/Qwen3-4B-Instruct-2507-4bit` | ~2.3 GB | mejor calidad, va bien con 16 GB |
+  | Qwen3.5 4B (experimental) | `mlx-community/Qwen3.5-4B-MLX-4bit` | ~3 GB | el más nuevo; necesita `mlx-lm` reciente |
+
+  Los modelos que "piensan" (Qwen3/3.5) se usan con el razonamiento apagado y se limpia cualquier `<think>`.
+  Desde la terminal también vale `VOICELOGGER_QWEN_MODEL=<repo>`.
 
 ### Contexto / persona: `qwen_context.txt`
 

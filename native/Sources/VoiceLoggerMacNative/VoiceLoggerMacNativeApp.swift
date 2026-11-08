@@ -17,6 +17,17 @@ struct QAItem: Identifiable, Equatable {
     var failed = false
 }
 
+/// Qwen models for the summary / questions (MLX 4-bit, downloaded once to the
+/// Hugging Face cache). Sizes are approximate download sizes.
+enum QwenModels {
+    static let `default` = "mlx-community/Qwen2.5-1.5B-Instruct-4bit"
+    static let choices: [(label: String, id: String)] = [
+        ("Qwen2.5 1.5B · ligero, ~0.9 GB (actual)", "mlx-community/Qwen2.5-1.5B-Instruct-4bit"),
+        ("Qwen3 4B 2507 · mejor calidad, ~2.3 GB (bien con 16 GB)", "mlx-community/Qwen3-4B-Instruct-2507-4bit"),
+        ("Qwen3.5 4B · el más nuevo, ~3 GB (experimental)", "mlx-community/Qwen3.5-4B-MLX-4bit"),
+    ]
+}
+
 /// Values that change many times per second (audio level, session clock).
 /// Kept apart from `AppState` so they only re-render the meter, not the
 /// whole window with the transcript list.
@@ -82,6 +93,15 @@ final class AppState: ObservableObject {
     @Published var autoSummary = true { didSet { save() } }
     /// Seconds between live summary updates (counted from the end of the previous one).
     @Published var liveInterval = 30 { didSet { save() } }
+    @Published var qwenModel = QwenModels.default {
+        didSet {
+            guard oldValue != qwenModel else { return }
+            save()
+            switchQwenModel()
+        }
+    }
+    /// Interface size: 1.0 normal … 1.45 enorme.
+    @Published var uiScale = 1.15 { didSet { save() } }
     @Published var transcriptFontSize = 17 { didSet { save() } }
     @Published var alwaysOnTop = true { didSet { applyOnTop(); save() } }
     @Published var dimWhenIdle = true { didSet { save() } }
@@ -386,9 +406,21 @@ final class AppState: ObservableObject {
         if let qwen { return qwen }
         guard let bridge = resolveBridge() else { return nil }
         let log = logger.logsDirectory.deletingLastPathComponent().appendingPathComponent("qwen_server.log")
-        let server = QwenServer(bridge: bridge, logURL: log)
+        let server = QwenServer(bridge: bridge, logURL: log, model: qwenModel)
         qwen = server
         return server
+    }
+
+    /// Restarts the Qwen process with the selected model (it loads on the next
+    /// request, or right away if a session is running).
+    private func switchQwenModel() {
+        guard !isLoading, let qwen else { return }
+        let model = qwenModel
+        Task {
+            await qwen.setModel(model)
+            if self.isListening, self.autoSummary { self.warmUpAI() }
+        }
+        toast("Modelo de IA: se carga en la próxima respuesta (la primera vez se descarga).")
     }
 
     private func transcriptForAI() -> String {
@@ -619,6 +651,12 @@ final class AppState: ObservableObject {
         transcriptFontSize = max(12, min(28, transcriptFontSize + delta))
     }
 
+    func changeUIScale(_ step: Int) {
+        let scales = Theme.uiScales
+        let current = scales.enumerated().min(by: { abs($0.element - uiScale) < abs($1.element - uiScale) })?.offset ?? 1
+        uiScale = scales[max(0, min(scales.count - 1, current + step))]
+    }
+
     // MARK: Derived values for the UI
 
     var filteredEntries: [TranscriptEntry] {
@@ -702,6 +740,8 @@ final class AppState: ObservableObject {
         d.set(summaryLang, forKey: "ai_lang")
         d.set(autoSummary, forKey: "auto_summary")
         d.set(liveInterval, forKey: "live_interval")
+        d.set(qwenModel, forKey: "qwen_model")
+        d.set(uiScale, forKey: "ui_scale")
         d.set(transcriptFontSize, forKey: "font_size")
         d.set(alwaysOnTop, forKey: "always_on_top")
         d.set(dimWhenIdle, forKey: "dim_when_idle")
@@ -720,15 +760,52 @@ final class AppState: ObservableObject {
         summaryLang = d.string(forKey: "ai_lang") ?? "en"
         autoSummary = d.object(forKey: "auto_summary") as? Bool ?? true
         liveInterval = d.object(forKey: "live_interval") as? Int ?? 30
+        qwenModel = d.string(forKey: "qwen_model") ?? QwenModels.default
+        uiScale = d.object(forKey: "ui_scale") as? Double ?? 1.15
         transcriptFontSize = max(12, min(28, d.object(forKey: "font_size") as? Int ?? 17))
         alwaysOnTop = d.object(forKey: "always_on_top") as? Bool ?? true
         dimWhenIdle = d.object(forKey: "dim_when_idle") as? Bool ?? true
     }
 }
 
+// MARK: - Interface scale
+
+/// Global interface size (⚙ → Tamaño de la interfaz). Chrome fonts and
+/// controls read it; reading text has its own size (A- / A+).
+struct UIScaleKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 1
+}
+
+extension EnvironmentValues {
+    var uiScale: CGFloat {
+        get { self[UIScaleKey.self] }
+        set { self[UIScaleKey.self] = newValue }
+    }
+}
+
+struct ScaledFont: ViewModifier {
+    @Environment(\.uiScale) private var scale
+    let size: CGFloat
+    let weight: Font.Weight
+    let design: Font.Design
+
+    func body(content: Content) -> some View {
+        content.font(.system(size: (size * scale).rounded(), weight: weight, design: design))
+    }
+}
+
+extension View {
+    /// System font of `size` points at 100 %, scaled by the interface size.
+    func scaledFont(_ size: CGFloat, weight: Font.Weight = .regular, design: Font.Design = .default) -> some View {
+        modifier(ScaledFont(size: size, weight: weight, design: design))
+    }
+}
+
 // MARK: - Theme & building blocks
 
 enum Theme {
+    /// Interface size steps (⌘⌥+ / ⌘⌥-): normal, grande, muy grande, enorme.
+    static let uiScales: [Double] = [1.0, 1.15, 1.3, 1.45]
     static let background = Color(red: 0.055, green: 0.055, blue: 0.082)
     static let card = Color(red: 0.086, green: 0.086, blue: 0.122)
     static let cardBorder = Color.white.opacity(0.07)
@@ -773,7 +850,7 @@ struct Panel<Accessory: View, Content: View>: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
                 Label(title, systemImage: systemImage)
-                    .font(.headline)
+                    .scaledFont(14, weight: .bold)
                     .foregroundStyle(tint)
                 Spacer(minLength: 8)
                 accessory
@@ -797,13 +874,14 @@ struct IconButton: View {
     let help: String
     var active = false
     let action: () -> Void
+    @Environment(\.uiScale) private var scale
 
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(.system(size: 14, weight: .medium))
+                .scaledFont(14, weight: .medium)
                 .foregroundStyle(active ? Theme.brand : Color.secondary)
-                .frame(width: 28, height: 26)
+                .frame(width: 28 * scale, height: 26 * scale)
                 .background(active ? Theme.brand.opacity(0.15) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
                 .contentShape(Rectangle())
         }
@@ -820,7 +898,7 @@ struct StatusPill: View {
         HStack(spacing: 6) {
             Circle().fill(color).frame(width: 8, height: 8)
             Text(label)
-                .font(.callout.weight(.semibold))
+                .scaledFont(12, weight: .semibold)
                 .lineLimit(1)
         }
         .foregroundStyle(color)
@@ -860,7 +938,7 @@ struct SessionMeter: View {
     var body: some View {
         HStack(spacing: 10) {
             Text(metrics.elapsed)
-                .font(.system(.callout, design: .monospaced).weight(.semibold))
+                .scaledFont(12, weight: .semibold, design: .monospaced)
                 .foregroundStyle(.secondary)
             LevelMeter(level: metrics.level)
                 .frame(width: 84, height: 12)
@@ -881,7 +959,7 @@ struct LiveBadge: View {
                 .opacity(pulse ? 0.25 : 1)
                 .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: pulse)
             Text("EN VIVO · \(interval) s")
-                .font(.caption2.weight(.bold))
+                .scaledFont(10, weight: .bold)
         }
         .foregroundStyle(Theme.ai)
         .padding(.horizontal, 7)
@@ -899,7 +977,7 @@ struct EmptyHint: View {
     var body: some View {
         VStack(spacing: 10) {
             Image(systemName: systemImage)
-                .font(.system(size: 28))
+                .scaledFont(28)
                 .foregroundStyle(.tertiary)
             Text(text)
                 .multilineTextAlignment(.center)
@@ -918,7 +996,7 @@ struct ToastView: View {
         let color: Color = kind == "alert" ? .red : (kind == "error" ? .orange : Theme.brand)
         let icon = kind == "alert" ? "bell.fill" : (kind == "error" ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
         Label(message, systemImage: icon)
-            .font(.callout.weight(.semibold))
+            .scaledFont(12, weight: .semibold)
             .foregroundStyle(.white)
             .lineLimit(2)
             .padding(.horizontal, 14)
@@ -1034,7 +1112,7 @@ struct QARow: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Image(systemName: "person.fill")
-                    .font(.system(size: 12))
+                    .scaledFont(12)
                     .foregroundStyle(Theme.qa)
                 Text(item.question)
                     .font(.system(size: CGFloat(fontSize), weight: .semibold))
@@ -1119,6 +1197,7 @@ struct FullView: View {
     @Environment(\.dismissWindow) private var dismissWindow
     @State private var showSettings = false
     @FocusState private var searchFocused: Bool
+    @Environment(\.uiScale) private var uiScale
 
     var body: some View {
         VStack(spacing: 10) {
@@ -1141,7 +1220,7 @@ struct FullView: View {
             footer
         }
         .padding(12)
-        .frame(minWidth: 780, minHeight: 500)
+        .frame(minWidth: 780 * uiScale, minHeight: 500)
         .background(Theme.background)
         .overlay(alignment: .bottom) {
             if let message = state.toastMessage {
@@ -1164,9 +1243,10 @@ struct FullView: View {
 
             Button { showSettings = true } label: {
                 Text(state.modelSummary)
-                    .font(.caption.weight(.semibold))
+                    .scaledFont(11, weight: .semibold)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .truncationMode(.tail)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 4)
                     .background(Color.white.opacity(0.06), in: Capsule())
@@ -1233,14 +1313,14 @@ struct FullView: View {
             Button("Limpiar transcripción", systemImage: "trash", role: .destructive) { state.clearDisplay() }
         } label: {
             Image(systemName: "ellipsis.circle")
-                .font(.system(size: 14, weight: .medium))
+                .scaledFont(14, weight: .medium)
                 .foregroundStyle(.secondary)
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
-        .frame(width: 28, height: 26)
+        .frame(width: 28 * uiScale, height: 26 * uiScale)
         .help("Más acciones")
     }
 
@@ -1285,10 +1365,10 @@ struct FullView: View {
                 .foregroundStyle(.secondary)
             }
         }
-        .font(.callout)
+        .scaledFont(12)
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .frame(width: 190)
+        .frame(width: 190 * uiScale)
         .background(Color.white.opacity(0.06), in: Capsule())
         .background {
             // Invisible button that only carries the ⌘F shortcut.
@@ -1343,12 +1423,12 @@ struct FullView: View {
                 }
                 if state.isWarmingAI {
                     ProgressView().controlSize(.small)
-                    Text("Cargando Qwen…").font(.caption).foregroundStyle(.secondary)
+                    Text("Cargando Qwen…").scaledFont(11).foregroundStyle(.secondary)
                 } else if state.isSummarizing {
                     ProgressView().controlSize(.small)
-                    Text("Actualizando…").font(.caption).foregroundStyle(.secondary)
+                    Text("Actualizando…").scaledFont(11).foregroundStyle(.secondary)
                 } else if let updated = state.summaryUpdatedAt {
-                    Text("Actualizado \(updated)").font(.caption).foregroundStyle(.secondary)
+                    Text("Actualizado \(updated)").scaledFont(11).foregroundStyle(.secondary)
                 }
                 IconButton(systemImage: "doc.on.doc", help: "Copiar resumen") {
                     state.copySummary()
@@ -1365,7 +1445,7 @@ struct FullView: View {
                     // Errors show above the last good summary instead of hiding it.
                     if let error = state.summaryError {
                         Label(error, systemImage: "exclamationmark.triangle")
-                            .font(.callout)
+                            .scaledFont(12)
                             .foregroundStyle(Color.orange)
                     }
                     if !state.liveSummary.isEmpty {
@@ -1394,7 +1474,7 @@ struct FullView: View {
                     state.qaItems.removeAll()
                 }
                 .buttonStyle(.plain)
-                .font(.caption)
+                .scaledFont(11)
                 .foregroundStyle(.secondary)
             }
         } content: {
@@ -1431,10 +1511,10 @@ struct FullView: View {
                 HStack(spacing: 8) {
                     TextField("Pregunta algo sobre la reunión…", text: $state.qaQuestion)
                         .textFieldStyle(.plain)
-                        .font(.system(size: 14))
+                        .scaledFont(14)
                         .onSubmit { state.askQuestion() }
                     Button { state.askQuestion() } label: {
-                        Image(systemName: "paperplane.fill").font(.system(size: 14))
+                        Image(systemName: "paperplane.fill").scaledFont(14)
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(state.canAsk ? Theme.qa : Color.secondary)
@@ -1454,7 +1534,7 @@ struct FullView: View {
     private var keyQuestionsList: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("DETECTADAS EN EL AUDIO")
-                .font(.caption2.weight(.bold))
+                .scaledFont(10, weight: .bold)
                 .foregroundStyle(.secondary)
             ForEach(Array(state.keyQuestions.enumerated()), id: \.offset) { item in
                 Button {
@@ -1490,7 +1570,7 @@ struct FullView: View {
             }
             .buttonStyle(.plain)
         }
-        .font(.caption)
+        .scaledFont(11)
         .foregroundStyle(.secondary)
         .padding(.horizontal, 4)
     }
@@ -1523,6 +1603,11 @@ struct SettingsPopover: View {
                 }
             }
             Section("IA local (Qwen)") {
+                Picker("Modelo", selection: $state.qwenModel) {
+                    ForEach(QwenModels.choices, id: \.id) { choice in
+                        Text(choice.label).tag(choice.id)
+                    }
+                }
                 Picker("Idioma de las respuestas", selection: $state.summaryLang) {
                     Text("Inglés").tag("en")
                     Text("Español").tag("es")
@@ -1542,12 +1627,20 @@ struct SettingsPopover: View {
                 Toggle("Sonido al detectar", isOn: $state.alertSound)
             }
             Section("Lectura") {
-                Stepper("Tamaño de letra: \(state.transcriptFontSize) pt", value: $state.transcriptFontSize, in: 12...28)
+                Picker("Tamaño de la interfaz", selection: $state.uiScale) {
+                    Text("Normal").tag(1.0)
+                    Text("Grande").tag(1.15)
+                    Text("Muy grande").tag(1.3)
+                    Text("Enorme").tag(1.45)
+                }
+                Stepper("Letra de lectura: \(state.transcriptFontSize) pt", value: $state.transcriptFontSize, in: 12...28)
                 Toggle("Autodesplazar al final", isOn: $state.autoscroll)
             }
         }
         .formStyle(.grouped)
-        .frame(width: 420, height: 500)
+        .font(.system(size: (13 * state.uiScale).rounded()))
+        .controlSize(state.uiScale >= 1.15 ? .large : .regular)
+        .frame(width: 440 * state.uiScale, height: 600 * state.uiScale)
     }
 }
 
@@ -1668,6 +1761,9 @@ struct ContentView: View {
                 FullView(state: state)
             }
         }
+        .environment(\.uiScale, CGFloat(state.uiScale))
+        .font(.system(size: (13 * state.uiScale).rounded()))
+        .controlSize(state.uiScale >= 1.15 ? .large : .regular)
         .background(WindowReader { window in windowBox.window = window })
         .onAppear {
             state.applyOnTop()
@@ -1706,6 +1802,10 @@ struct SessionCommands: Commands {
                 .keyboardShortcut("+", modifiers: .command)
             Button("Reducir letra") { AppState.shared.changeFontSize(-1) }
                 .keyboardShortcut("-", modifiers: .command)
+            Button("Agrandar interfaz") { AppState.shared.changeUIScale(1) }
+                .keyboardShortcut("+", modifiers: [.command, .option])
+            Button("Reducir interfaz") { AppState.shared.changeUIScale(-1) }
+                .keyboardShortcut("-", modifiers: [.command, .option])
         }
     }
 }

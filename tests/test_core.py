@@ -5,6 +5,7 @@ import os
 import tempfile
 import sys
 import time
+import types
 import unittest
 from unittest import mock
 
@@ -192,6 +193,35 @@ class LiveInsightsTests(unittest.TestCase):
     def test_no_text_at_all_fails(self):
         with self.assertRaises(ValueError):
             summarizer.live_insights()
+
+
+class ThinkingModelTests(unittest.TestCase):
+    def test_strip_thinking(self):
+        self.assertEqual(summarizer._strip_thinking("<think>hmm\nok</think>\n## Summary\nX"), "## Summary\nX")
+        self.assertEqual(summarizer._strip_thinking("razono...</think>Respuesta"), "Respuesta")
+        self.assertEqual(summarizer._strip_thinking("Respuesta<think>cortado"), "Respuesta")
+        self.assertEqual(summarizer._strip_thinking("## Summary\nSin pensar"), "## Summary\nSin pensar")
+
+    def test_generate_disables_thinking_and_cleans_output(self):
+        captured = {}
+
+        class FakeTokenizer:
+            def apply_chat_template(self, messages, **kwargs):
+                captured.update(kwargs)
+                return "PROMPT"
+
+        fake_mlx = types.ModuleType("mlx_lm")
+        fake_mlx.generate = lambda model, tokenizer, prompt, max_tokens, sampler, verbose: (
+            "<think>planning</think>\n```markdown\n## Summary\nOk\n```"
+        )
+        fake_utils = types.ModuleType("mlx_lm.sample_utils")
+        fake_utils.make_sampler = lambda temp: None
+        with mock.patch.dict(sys.modules, {"mlx_lm": fake_mlx, "mlx_lm.sample_utils": fake_utils}), \
+                mock.patch.object(summarizer, "_tokenizer", FakeTokenizer()), \
+                mock.patch.object(summarizer, "_model", object()):
+            out = summarizer._generate("system", "user", max_tokens=10)
+        self.assertEqual(out, "## Summary\nOk")
+        self.assertIs(captured["enable_thinking"], False)
 
 
 class ServeTests(unittest.TestCase):
