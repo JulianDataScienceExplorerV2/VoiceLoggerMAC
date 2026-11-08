@@ -19,6 +19,13 @@ struct DetectedQuestion: Identifiable, Equatable {
     let time: String
 }
 
+/// Setting: how many AI-phrased key questions to show per live update.
+struct AIQuestionLevel: Identifiable, Sendable {
+    let id: String
+    let label: String
+    let limit: Int
+}
+
 struct QAItem: Identifiable, Equatable {
     let id = UUID()
     let question: String
@@ -183,6 +190,22 @@ final class AppState: ObservableObject {
     @Published var isExtractingTasks = false
     /// Show the "detected in the audio" questions (the X hides them).
     @Published var showKeyQuestions = true { didSet { save() } }
+    /// How many AI-phrased (blue) key questions to keep from each live update:
+    /// "few", "medium" (default) or "many". The ones said word for word
+    /// (orange) are always kept, so they never get lost among the others.
+    @Published var aiQuestionsLevel = "medium" {
+        didSet {
+            save()
+            keyQuestions = selectQuestions(lastInsightQuestions)
+        }
+    }
+    static let aiQuestionLevels = [
+        AIQuestionLevel(id: "few", label: "Pocas (1)", limit: 1),
+        AIQuestionLevel(id: "medium", label: "Medias (3)", limit: 3),
+        AIQuestionLevel(id: "many", label: "Muchas (6)", limit: 6),
+    ]
+    /// Key questions of the last live update, before the limit above.
+    private var lastInsightQuestions: [String] = []
     /// How questions are answered: "open" = Ideas (meeting as context + the
     /// model's knowledge + web; default, for brainstorming) or "meeting" =
     /// only what was said in the meeting.
@@ -773,8 +796,10 @@ final class AppState: ObservableObject {
                 self.liveMarkdown = insights.markdown
                 self.liveSummary = insights.summary
                 self.classifyQuestions(insights.questions)
-                self.keyQuestions = insights.questions
-                self.rememberQuestions(insights.questions)
+                self.lastInsightQuestions = insights.questions
+                let questions = self.selectQuestions(insights.questions)
+                self.keyQuestions = questions
+                self.rememberQuestions(questions)
                 self.actionItems = insights.actionItems
                 self.summarizedText = full
                 self.summaryUpdatedAt = Self.clock()
@@ -1197,6 +1222,15 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Said-in-the-meeting questions first (all of them), then at most the
+    /// chosen number of AI-phrased ones, in the model's order of importance.
+    private func selectQuestions(_ questions: [String]) -> [String] {
+        let limit = Self.aiQuestionLevels.first { $0.id == aiQuestionsLevel }?.limit ?? 3
+        let literal = questions.filter { isLiteral($0) }
+        let phrased = questions.filter { !isLiteral($0) }.prefix(limit)
+        return literal + phrased
+    }
+
     /// "- [10:42] Question" (+ "dicha en la reunión" if literal), for copy / export.
     func questionLine(_ question: DetectedQuestion) -> String {
         "- [\(question.time)] \(question.text)\(isLiteral(question.text) ? " _(dicha en la reunión)_" : "")"
@@ -1291,6 +1325,7 @@ final class AppState: ObservableObject {
         liveMarkdown = ""
         summarizedText = ""
         keyQuestions = []
+        lastInsightQuestions = []
         questionHistory = []
         literalKeys = []
         checkedQuestionKeys = []
@@ -1415,6 +1450,7 @@ final class AppState: ObservableObject {
         d.set(askModelsOnLaunch, forKey: "ask_models_on_launch")
         d.set(modelsChosen, forKey: "models_chosen")
         d.set(showKeyQuestions, forKey: "show_key_questions")
+        d.set(aiQuestionsLevel, forKey: "ai_questions")
         d.set(uiScale, forKey: "ui_scale")
         d.set(transcriptFontSize, forKey: "font_size")
         d.set(alwaysOnTop, forKey: "always_on_top")
@@ -1431,7 +1467,7 @@ final class AppState: ObservableObject {
         let keys = [
             "model", "language", "sensitivity", "alerts", "alert_sound", "autoscroll", "ai_lang", "auto_summary",
             "font_size", "always_on_top", "dim_when_idle", "live_interval", "qwen_model", "ui_scale",
-            "long_answers", "answer_mode", "live_speed", "vocabulary", "show_key_questions", "ask_tasks_on_stop", "allow_web_search", "preferred_sites", "read_web_pages", "ask_models_on_launch", "models_chosen", "python_root",
+            "long_answers", "answer_mode", "live_speed", "vocabulary", "show_key_questions", "ai_questions", "ask_tasks_on_stop", "allow_web_search", "preferred_sites", "read_web_pages", "ask_models_on_launch", "models_chosen", "python_root",
         ]
         for key in keys {
             if let value = old.object(forKey: key) { d.set(value, forKey: key) }
@@ -1466,6 +1502,8 @@ final class AppState: ObservableObject {
         askModelsOnLaunch = d.object(forKey: "ask_models_on_launch") as? Bool ?? true
         modelsChosen = d.object(forKey: "models_chosen") as? Bool ?? false
         showKeyQuestions = d.object(forKey: "show_key_questions") as? Bool ?? true
+        let savedLevel = d.string(forKey: "ai_questions") ?? "medium"
+        aiQuestionsLevel = Self.aiQuestionLevels.contains { $0.id == savedLevel } ? savedLevel : "medium"
         uiScale = d.object(forKey: "ui_scale") as? Double ?? 1.15
         transcriptFontSize = max(12, min(28, d.object(forKey: "font_size") as? Int ?? 17))
         alwaysOnTop = d.object(forKey: "always_on_top") as? Bool ?? true
@@ -2690,6 +2728,12 @@ struct SettingsPopover: View {
                 }
                 Toggle("Respuestas largas y detalladas", isOn: $state.longAnswers)
                 Toggle("Mostrar preguntas detectadas en el audio", isOn: $state.showKeyQuestions)
+                Picker("Preguntas sacadas por la IA", selection: $state.aiQuestionsLevel) {
+                    ForEach(AppState.aiQuestionLevels) { level in
+                        Text(level.label).tag(level.id)
+                    }
+                }
+                .help("Cuántas preguntas azules (redactadas por la IA) se muestran en cada actualización. Las naranjas (dichas tal cual en la reunión) salen siempre, primero.")
                 Toggle("Al detener, proponer las tareas para Recordatorios", isOn: $state.askTasksOnStop)
                 Picker("Respuestas por defecto", selection: $state.answerMode) {
                     Text("Ideas: reunión + conocimiento + internet").tag("open")

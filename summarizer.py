@@ -112,7 +112,8 @@ PROMPTS = {
         "sections": (
             "## Summary\n(2-3 sentences)\n"
             "## Key topics\n(bullets)\n"
-            "## Key questions\n(bullets: the most important questions asked or raised, at most 5)\n"
+            "## Key questions\n(bullets: the most important questions asked or raised, at most 5; "
+            "if someone asked it, copy it word for word)\n"
             "## Decisions\n(bullets)\n"
             "## Action items\n(bullets, with owner if mentioned)\n"
         ),
@@ -206,7 +207,8 @@ PROMPTS = {
         "sections": (
             "## Resumen\n(2-3 frases)\n"
             "## Temas tratados\n(viñetas)\n"
-            "## Preguntas clave\n(viñetas: las preguntas más importantes que se han hecho o planteado, máximo 5)\n"
+            "## Preguntas clave\n(viñetas: las preguntas más importantes que se han hecho o planteado, máximo 5; "
+            "si alguien la hizo, cópiala tal cual)\n"
             "## Decisiones\n(viñetas)\n"
             "## Tareas / pendientes\n(viñetas, con responsable si se menciona)\n"
         ),
