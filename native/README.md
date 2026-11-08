@@ -51,10 +51,13 @@ botones y ajustes; *Letra de lectura* (A- / A+) agranda transcripción, resumen 
   siguiente: no se pierde audio ni se parten palabras.
 - **Contexto para Whisper:** recibe la frase anterior y tu **vocabulario** (⚙ → Vocabulario: nombres, productos,
   siglas) para escribir bien los nombres y no perder el hilo.
-- **Música de fondo:** si Whisper devuelve solo «[Music]» o nada en un bloque de 2 s o más, se reintenta una vez sin
-  descartar «no voz». Se quitan las etiquetas de sonido ([Music], (laughter), ♪…) y los bucles («X… X… X…»).
-- **Diagnóstico:** cada bloque queda en `logs/diagnostico_AAAA-MM-DD.jsonl` (texto crudo de Whisper, qué se guardó,
-  si se recuperó en el segundo intento).
+- **Bloques vacíos (rescate):** si Whisper devuelve solo «[Music]» o nada en un bloque de 2 s o más, se reintenta
+  sin contexto, sin filtros de calidad (no voz, probabilidad, compresión) y sin marcas de tiempo; si sigue vacío y
+  dura 4 s o más, se transcribe cada mitad por separado. Lo rescatado solo se guarda si es creíble (≈1 palabra por
+  segundo, mínimo 3): así no se cuelan inventos como «It's a good one.» en 7 s de charla. Se quitan las etiquetas de
+  sonido ([Music], (laughter), ♪…) y los bucles («X… X… X…»).
+- **Diagnóstico:** cada bloque queda en `~/Library/Application Support/VoiceLoggerMac/logs/diagnostico_AAAA-MM-DD.jsonl`
+  (texto crudo de Whisper, qué se guardó, `result` ok / recuperado / descartado y `attempts`: normal, rescate, mitades).
 - **Medir:** `python3 tools/evaluar_transcripcion.py reunion.txt referencia.txt` compara con un texto de referencia
   (p. ej. subtítulos de YouTube) y da precisión, tramos perdidos y texto añadido. Línea base con el video de Borough
   Market antes de estas mejoras: **81,6 %**, con 17 tramos perdidos (393 palabras).
@@ -72,6 +75,9 @@ botones y ajustes; *Letra de lectura* (A- / A+) agranda transcripción, resumen 
 - **Incremental**: mientras la reunión cabe en una pasada (~12 000 caracteres) el acta se
   rehace entera; después se actualiza con *notas anteriores + solo lo nuevo*, así cada
   actualización cuesta lo mismo a los 5 minutos que a las 2 horas.
+- **Anti-bucles**: Qwen genera con penalización de repetición y el acta se limpia de líneas
+  repetidas (y de lo que pase de 25 líneas por sección) antes de mostrarse y de usarse como
+  *notas anteriores*: un resumen roto («X» ×80) ya no se arrastra a la siguiente actualización.
 - **Preguntas clave**: salen del propio resumen y se muestran arriba del panel *Preguntas*.
   Al tocar una, Qwen la responde con lo dicho en la reunión.
 - Whisper también se precarga al abrir la app; los archivos de ambos modelos ya quedan en la

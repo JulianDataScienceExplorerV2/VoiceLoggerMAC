@@ -227,6 +227,63 @@ class ThinkingModelTests(unittest.TestCase):
         self.assertIs(captured["enable_thinking"], False)
 
 
+class RepetitionTests(unittest.TestCase):
+    LOOP = "# Resumen\n- **Tema**: Sandwich\n- **Tareas**:\n  - Slicing pork\n" + \
+        "  - Toasting whole pork shoulder\n" * 80 + "  -"
+
+    def test_loop_is_collapsed_in_minutes(self):
+        out = summarizer.clean_minutes(self.LOOP)
+        self.assertEqual(out.count("Toasting whole pork shoulder"), 1)
+        self.assertEqual(out.splitlines()[-1], "  - Toasting whole pork shoulder")  # sin la viñeta vacía
+
+    def test_same_line_with_other_bullet_or_bold_is_a_repeat(self):
+        text = "## Notes\n- **Budget** is approved.\n* Budget is approved\n1. budget IS approved!"
+        self.assertEqual(summarizer.dedupe_lines(text), "## Notes\n- **Budget** is approved.")
+
+    def test_repeats_in_other_sections_and_short_labels_are_kept(self):
+        text = ("## Option A\n**Pros:**\n- fast\n**Cons:**\n- pricey\n**Pros:**\n- more\n---\n"
+                "## Key questions\n- Who pays for the new office?\n"
+                "## Summary\n- Who pays for the new office?")
+        self.assertEqual(summarizer.dedupe_lines(text), text)
+
+    def test_consecutive_short_repeats_and_long_sections_are_cut(self):
+        self.assertEqual(summarizer.dedupe_lines("- Pork\n- Pork\n- Pork"), "- Pork")
+        many = "## Points\n" + "\n".join(f"- point number {i}" for i in range(40))
+        self.assertEqual(len(summarizer.dedupe_lines(many).splitlines()), 1 + summarizer.MAX_LINES_PER_SECTION)
+
+    def test_broken_previous_notes_are_cleaned_before_reuse(self):
+        with mock.patch.object(summarizer, "_generate", return_value="## Summary\nNew") as fake:
+            summarizer._live_blocking("", "more talk", self.LOOP, "en")
+        prompt = fake.call_args.args[1]
+        self.assertEqual(prompt.count("Toasting whole pork shoulder"), 1)
+        result = summarizer.live_insights(previous=self.LOOP, new_text=" ")
+        self.assertEqual(result["markdown"].count("Toasting whole pork shoulder"), 1)
+
+    def test_generate_penalizes_repeats_except_for_tasks(self):
+        calls = []
+
+        class FakeTokenizer:
+            def apply_chat_template(self, messages, **kwargs):
+                return "PROMPT"
+
+        def fake_generate(model, tokenizer, prompt, max_tokens, sampler, verbose, prefill_step_size=None,
+                          logits_processors=None):
+            calls.append(logits_processors)
+            return "ok"
+
+        fake_mlx = types.ModuleType("mlx_lm")
+        fake_mlx.generate = fake_generate
+        fake_utils = types.ModuleType("mlx_lm.sample_utils")
+        fake_utils.make_sampler = lambda temp: None
+        fake_utils.make_logits_processors = lambda **kwargs: [("penalty", kwargs["repetition_penalty"])]
+        with mock.patch.dict(sys.modules, {"mlx_lm": fake_mlx, "mlx_lm.sample_utils": fake_utils}), \
+                mock.patch.object(summarizer, "_tokenizer", FakeTokenizer()), \
+                mock.patch.object(summarizer, "_model", object()):
+            summarizer._generate("system", "user", max_tokens=10)
+            summarizer._generate("system", "user", max_tokens=10, penalize_repeats=False)
+        self.assertEqual(calls, [[("penalty", summarizer.REPETITION_PENALTY)], None])
+
+
 class AskWithNotesTests(unittest.TestCase):
     def test_notes_go_into_the_prompt(self):
         with mock.patch.object(summarizer, "_generate", return_value="ok") as fake, \

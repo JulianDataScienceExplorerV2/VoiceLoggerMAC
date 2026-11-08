@@ -62,6 +62,15 @@ PREFILL_STEP = 512
 MLX_CACHE_LIMIT_MB = int(os.environ.get("VOICELOGGER_MLX_CACHE_MB") or 512)
 IDLE_UNLOAD_SECONDS = float(os.environ.get("VOICELOGGER_QWEN_IDLE_UNLOAD") or 600)
 
+# Anti-bucles: los modelos pequeños a veces repiten la misma línea hasta
+# agotar max_tokens ("- Toasting whole pork shoulder" ×80). La penalización
+# de repetición lo frena al generar, y las líneas repetidas se quitan después
+# (si no, el acta rota sería la base de la siguiente actualización en vivo).
+REPETITION_PENALTY = 1.1
+REPETITION_CONTEXT = 64
+MAX_LINES_PER_SECTION = 25
+ANSWER_MAX_LINES = 60
+
 # Persona/contexto para Qwen. Se lee en cada petición: basta con editar y
 # guardar. qwen_context.txt no se sube a git (puede tener datos privados) y se
 # crea a partir del ejemplo la primera vez.
@@ -450,7 +459,7 @@ def clean_minutes(markdown):
     body = "\n".join(lines[start + 1:]).strip()  # lo que va bajo el primer encabezado
     if looks_like_reasoning(cleaned) or looks_like_reasoning(body):
         raise ModelOutputError(REASONING_MESSAGE)
-    return cleaned
+    return dedupe_lines(cleaned)
 
 
 _FINAL_ANSWER_RE = re.compile(r"^\**\s*(final answer|answer|respuesta final|respuesta)\s*:\**\s*", re.IGNORECASE)
@@ -459,7 +468,7 @@ _FINAL_ANSWER_RE = re.compile(r"^\**\s*(final answer|answer|respuesta final|resp
 def clean_answer(text):
     """Respuesta sin razonamiento. Si el modelo pensó en voz alta pero dejó una
     línea «Answer:/Respuesta:», se usa lo que va después; si no, ModelOutputError."""
-    text = (text or "").strip()
+    text = dedupe_lines(text, max_per_section=ANSWER_MAX_LINES)
     if not looks_like_reasoning(text):
         return text
     lines = text.splitlines()
@@ -485,7 +494,68 @@ def _strip_code_fence(result):
     return result
 
 
-def _generate(system, user, max_tokens, temp=0.3):
+def _repetition_processors():
+    """Logits processors con penalización de repetición, o None si la versión
+    de mlx-lm no los tiene."""
+    try:
+        from mlx_lm.sample_utils import make_logits_processors
+
+        return make_logits_processors(
+            repetition_penalty=REPETITION_PENALTY, repetition_context_size=REPETITION_CONTEXT
+        )
+    except (ImportError, TypeError):
+        return None
+
+
+_BULLET_RE = re.compile(r"^(?:[-*•+]|\d+[.)])\s*")
+_WORD_RE = re.compile(r"\w+", re.UNICODE)
+
+
+def _line_key(line):
+    """Forma normalizada de una línea para detectar repeticiones."""
+    text = _BULLET_RE.sub("", line.strip())
+    return " ".join(_WORD_RE.findall(text.replace("*", "").lower()))
+
+
+def dedupe_lines(text, max_per_section=MAX_LINES_PER_SECTION):
+    """Quita las líneas repetidas de cada sección (aunque cambien viñeta,
+    negritas o puntuación), las viñetas vacías y lo que pase de
+    ``max_per_section`` líneas por sección.
+
+    Una línea corta (menos de 3 palabras, p. ej. «Pros:») solo se quita si
+    repite la anterior: puede volver a salir con sentido en la misma sección.
+    Los encabezados, líneas en blanco y separadores (``---``) se conservan.
+    Sirve para que un bucle del modelo no llene el acta ni se arrastre a la
+    siguiente actualización en vivo.
+    """
+    kept, seen = [], set()
+    previous_key, in_section = None, 0
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            seen, previous_key, in_section = set(), None, 0
+            kept.append(line)
+            continue
+        if not stripped:
+            if not (kept and not kept[-1].strip()):  # sin líneas en blanco dobles
+                kept.append(line)
+            continue
+        key = _line_key(stripped)
+        if not key:
+            if _BULLET_RE.sub("", stripped):
+                kept.append(line)  # separador o símbolo suelto: se deja
+            continue  # viñeta vacía ("-" cortado por max_tokens)
+        repeated = key == previous_key or (key in seen and len(key.split()) >= 3)
+        previous_key = key
+        if repeated or in_section >= max_per_section:
+            continue
+        seen.add(key)
+        in_section += 1
+        kept.append(line)
+    return "\n".join(kept).strip()
+
+
+def _generate(system, user, max_tokens, temp=0.3, penalize_repeats=True):
     from mlx_lm import generate
     from mlx_lm.sample_utils import make_sampler
 
@@ -502,11 +572,19 @@ def _generate(system, user, max_tokens, temp=0.3):
         enable_thinking=False,
     )
     options = dict(prompt=prompt, max_tokens=max_tokens, sampler=make_sampler(temp=temp), verbose=False)
+    processors = _repetition_processors() if penalize_repeats else None
+    extra = {"logits_processors": processors} if processors else {}
+    # De la opción más completa a la más básica: las versiones viejas de
+    # mlx-lm no aceptan prefill_step_size ni logits_processors.
+    attempts = [dict(prefill_step_size=PREFILL_STEP, **extra), extra, {}]
     try:
-        try:
-            result = generate(_model, _tokenizer, prefill_step_size=PREFILL_STEP, **options)
-        except TypeError:  # mlx-lm sin prefill_step_size
-            result = generate(_model, _tokenizer, **options)
+        for index, attempt in enumerate(attempts):
+            try:
+                result = generate(_model, _tokenizer, **options, **attempt)
+                break
+            except TypeError:
+                if index == len(attempts) - 1:
+                    raise
     finally:
         _mx_call("clear_cache")
     return _strip_code_fence(_strip_thinking(result))
@@ -637,7 +715,9 @@ def _live_blocking(text, new_text, previous, language):
         return _summarize_blocking(text, language)
     if previous.strip() and new_text.strip():
         # Incremental: notas anteriores + solo lo nuevo, ambos con presupuesto
-        # fijo, así el costo no crece con la duración de la reunión.
+        # fijo, así el costo no crece con la duración de la reunión. Las notas
+        # se limpian de repeticiones para que un bucle no se arrastre.
+        previous = dedupe_lines(previous)
         prompts = _prompts(language)
         user = prompts["update"].format(
             previous=fit_tokens(previous, LIVE_NOTES_TOKENS, keep="head"),
@@ -664,7 +744,7 @@ def live_insights(text="", new_text="", previous="", language="en"):
     if not (text.strip() or new_text.strip()):
         if not previous.strip():
             raise ValueError("no transcript to summarize yet")
-        markdown = previous.strip()
+        markdown = dedupe_lines(previous)
     else:
         markdown = clean_minutes(_executor.submit(_run_live, text, new_text, previous, language).result())
     rest, questions = split_key_questions(markdown)
@@ -891,7 +971,10 @@ def _tasks_blocking(notes, text, language, today):
         blocks.append(f"{labels['notes']}\n{notes}")
     if text:
         blocks.append(f"{labels['recent'] if notes else labels['transcript']}\n{text}")
-    raw = _generate(_system_prompt(language), "\n\n".join(blocks), max_tokens=500, temp=0.1)
+    # Sin penalización: el formato "tarea | responsable | fecha" se repite a propósito.
+    raw = _generate(
+        _system_prompt(language), "\n\n".join(blocks), max_tokens=500, temp=0.1, penalize_repeats=False
+    )
     return parse_tasks(raw)
 
 

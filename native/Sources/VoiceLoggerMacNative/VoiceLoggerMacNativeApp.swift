@@ -448,19 +448,32 @@ final class AppState: ObservableObject {
             status = "Transcribiendo..."
             let prompt = whisperPrompt()
             let seconds = Double(audio.count) / 16000
+            var attempts = ["normal"]
             var (raw, lang) = try await transcriber.transcribe(audio, language: language, prompt: prompt, relaxed: false)
             var text = TranscriptCleaner.clean(raw)
             var firstRaw: String?
-            // Over background music Whisper may return only "[Music]" (or nothing)
-            // and the voice on top was lost: one more try keeping "no speech" parts.
+            // The diagnostics showed ~4% of blocks coming back EMPTY with clear
+            // speech (not "[Music]"). Rescue: no context, no quality gates, no
+            // timestamp tokens; then each half on its own (another window).
             if text == nil, seconds >= 2 {
                 firstRaw = raw
-                (raw, lang) = try await transcriber.transcribe(audio, language: language, prompt: prompt, relaxed: true)
-                text = TranscriptCleaner.clean(raw)
+                attempts.append("rescate")
+                (raw, lang) = try await transcriber.transcribe(audio, language: language, prompt: nil, relaxed: true)
+                text = Self.plausible(TranscriptCleaner.clean(raw), seconds: seconds)
+                if text == nil, seconds >= 4 {
+                    attempts.append("mitades")
+                    let middle = audio.count / 2
+                    let first = try await transcriber.transcribe(Array(audio[..<middle]), language: language, prompt: nil, relaxed: true)
+                    let second = try await transcriber.transcribe(Array(audio[middle...]), language: language, prompt: nil, relaxed: true)
+                    raw = first.text + " " + second.text
+                    lang = first.language
+                    text = Self.plausible(TranscriptCleaner.clean(raw), seconds: seconds)
+                }
             }
             var diagnostic = [
                 "time": ts, "seconds": String(format: "%.1f", seconds), "raw": raw,
-                "kept": text ?? "", "result": text == nil ? "descartado" : (firstRaw == nil ? "ok" : "recuperado"),
+                "kept": text ?? "", "attempts": attempts.joined(separator: "+"),
+                "result": text == nil ? "descartado" : (firstRaw == nil ? "ok" : "recuperado"),
             ]
             if let firstRaw { diagnostic["raw_first_try"] = firstRaw }
             logger.diagnostic(diagnostic)
@@ -479,6 +492,14 @@ final class AppState: ObservableObject {
         } else {
             status = "Detenido"
         }
+    }
+
+    /// A rescued block needs roughly as many words as seconds of speech:
+    /// "It's a good one." for 7 s of talk is Whisper filling the gap, not speech.
+    private static func plausible(_ text: String?, seconds: Double) -> String? {
+        guard let text else { return nil }
+        let words = text.split(whereSeparator: \.isWhitespace).count
+        return words >= max(3, Int(seconds * 0.8)) ? text : nil
     }
 
     /// Context for Whisper: the vocabulary plus the end of the last block.

@@ -7,8 +7,8 @@ import WhisperKit
 public protocol Transcriber: Sendable {
     /// - prompt: context for Whisper (vocabulary + the end of what was just said),
     ///   so names stay consistent and phrases cut mid-sentence keep their meaning.
-    /// - relaxed: second attempt that keeps speech Whisper would skip as "no
-    ///   speech" (e.g. a voice over background music).
+    /// - relaxed: rescue attempt for a block that came back empty: no quality
+    ///   gates and no timestamp tokens.
     func transcribe(_ audio: [Float], language: String, prompt: String?, relaxed: Bool) async throws -> (text: String, language: String)
 }
 
@@ -65,7 +65,15 @@ public final class WhisperKitTranscriber: Transcriber, @unchecked Sendable {
                 .filter { $0 < tokenizer.specialTokens.specialTokenBegin }
         }
         if relaxed {
-            options.noSpeechThreshold = 1.0  // never discard a segment as "no speech"
+            // Rescue for a block that came back empty (seen in the diagnostics:
+            // clear speech, empty text, even with no-speech disabled). No quality
+            // gates and no timestamp tokens: Whisper sometimes predicts a
+            // timestamp and ends the block without writing any text.
+            options.noSpeechThreshold = 1.0
+            options.logProbThreshold = -100
+            options.firstTokenLogProbThreshold = -100
+            options.compressionRatioThreshold = 100
+            options.withoutTimestamps = true
         }
         let results = try await pipe.transcribe(audioArray: audio, decodeOptions: options)
         let text = results.map(\.text).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
