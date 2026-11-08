@@ -7,18 +7,20 @@ protocol AIEngine: Sendable {
     func setModel(_ newModel: String) async
     func warmup() async throws
     func liveInsights(text: String, newText: String, previous: String, lang: String) async throws -> LiveInsights
+    /// `partial` receives the answer while it is written (engines that cannot
+    /// stream it just never call it).
     func ask(
         question: String, text: String, notes: String, session: String, memoryDir: String,
         lang: String, detail: String, mode: String, web: Bool, sites: String, readPages: Bool,
-        prefetchWeb: Bool
+        prefetchWeb: Bool, partial: PartialText?
     ) async throws -> (answer: String, sources: [WebSource])
     func extend(
         question: String, previous: String, notes: String, lang: String, detail: String,
-        sites: String, readPages: Bool
+        sites: String, readPages: Bool, partial: PartialText?
     ) async throws -> (answer: String, sources: [WebSource])
     func complement(
         question: String, previous: String, notes: String, lang: String, detail: String,
-        sites: String, readPages: Bool
+        sites: String, readPages: Bool, partial: PartialText?
     ) async throws -> (answer: String, sources: [WebSource])
     func questions(text: String, known: [String], lang: String) async throws -> [String]
     func tasks(notes: String, text: String, lang: String, today: String) async throws -> [MeetingTask]
@@ -26,7 +28,40 @@ protocol AIEngine: Sendable {
     func unload() async -> Bool
 }
 
-extension QwenServer: AIEngine {}
+/// The Python process answers in one piece (one JSON line per request): no streaming.
+extension QwenServer: AIEngine {
+    func ask(
+        question: String, text: String, notes: String, session: String, memoryDir: String,
+        lang: String, detail: String, mode: String, web: Bool, sites: String, readPages: Bool,
+        prefetchWeb: Bool, partial: PartialText?
+    ) async throws -> (answer: String, sources: [WebSource]) {
+        try await ask(
+            question: question, text: text, notes: notes, session: session, memoryDir: memoryDir,
+            lang: lang, detail: detail, mode: mode, web: web, sites: sites, readPages: readPages,
+            prefetchWeb: prefetchWeb
+        )
+    }
+
+    func extend(
+        question: String, previous: String, notes: String, lang: String, detail: String,
+        sites: String, readPages: Bool, partial: PartialText?
+    ) async throws -> (answer: String, sources: [WebSource]) {
+        try await extend(
+            question: question, previous: previous, notes: notes, lang: lang, detail: detail,
+            sites: sites, readPages: readPages
+        )
+    }
+
+    func complement(
+        question: String, previous: String, notes: String, lang: String, detail: String,
+        sites: String, readPages: Bool, partial: PartialText?
+    ) async throws -> (answer: String, sources: [WebSource]) {
+        try await complement(
+            question: question, previous: previous, notes: notes, lang: lang, detail: detail,
+            sites: sites, readPages: readPages
+        )
+    }
+}
 
 /// The AI engine without Python: a port of `summarizer.py` (same prompts,
 /// token budgets, cleaning and web search) on top of `LocalLLM` (MLX Swift).
@@ -69,8 +104,8 @@ actor SwiftAIEngine: AIEngine {
     private var prefetchOrder: [String] = []
     private var idleUnload: Task<Void, Never>?
 
-    init(model: String, contextFile: URL?, contextExample: URL?) {
-        llm = LocalLLM(modelID: model)
+    init(model: String, contextFile: URL?, contextExample: URL?, speculative: Bool = true) {
+        llm = LocalLLM(modelID: model, useDraft: speculative)
         self.contextFile = contextFile
         self.contextExample = contextExample
     }
@@ -79,6 +114,11 @@ actor SwiftAIEngine: AIEngine {
 
     func setModel(_ newModel: String) async {
         await llm.setModel(newModel)
+    }
+
+    /// Speculative decoding with a small helper model (⚙).
+    func setSpeculative(_ enabled: Bool) async {
+        await llm.setDraftEnabled(enabled)
     }
 
     func warmup() async throws {
@@ -195,7 +235,7 @@ actor SwiftAIEngine: AIEngine {
     func ask(
         question: String, text: String, notes: String, session: String, memoryDir: String,
         lang: String, detail: String, mode: String, web: Bool, sites: String, readPages: Bool,
-        prefetchWeb: Bool
+        prefetchWeb: Bool, partial: PartialText?
     ) async throws -> (answer: String, sources: [WebSource]) {
         defer { scheduleIdleUnload() }
         let question = AIText.trimmed(question)
@@ -208,18 +248,20 @@ actor SwiftAIEngine: AIEngine {
             if prefetchWeb { prefetch(question, lang: lang, sites: sites, read: read) }
             return try await openAnswer(
                 question: question, text: text, notes: notes, memory: memory, prompts: prompts, lang: lang,
-                detail: detail, web: web, sites: sites, read: read
+                detail: detail, web: web, sites: sites, read: read, partial: partial
             )
         }
         let answer = try await meetingAnswer(
-            question: question, text: text, notes: notes, memory: memory, prompts: prompts, detail: detail
+            question: question, text: text, notes: notes, memory: memory, prompts: prompts, detail: detail,
+            partial: partial
         )
         return (answer, [])
     }
 
     /// "Reunión" mode: only what was said in the meeting.
     private func meetingAnswer(
-        question: String, text: String, notes: String, memory: String, prompts: AIPrompts, detail: String
+        question: String, text: String, notes: String, memory: String, prompts: AIPrompts, detail: String,
+        partial: PartialText?
     ) async throws -> String {
         let text = AIText.tailText(AIText.trimmed(text), maxChars: AIText.qaMaxChars, prompts: prompts)
         try await ready()
@@ -234,7 +276,7 @@ actor SwiftAIEngine: AIEngine {
         blocks.append("\(prompts.question) \(question)\n\(detail == "short" ? prompts.instructionShort : prompts.instructionLong)")
         let raw = try await llm.generate(
             system: systemPrompt(prompts), user: blocks.joined(separator: "\n\n"),
-            maxTokens: Self.answerMaxTokens[detail] ?? 700, temperature: 0.2
+            maxTokens: Self.answerMaxTokens[detail] ?? 700, temperature: 0.2, partial: partial
         )
         return try AIText.cleanAnswer(raw)
     }
@@ -242,7 +284,7 @@ actor SwiftAIEngine: AIEngine {
     /// "Ideas" mode: the meeting as context + the model's knowledge + the web.
     private func openAnswer(
         question: String, text: String, notes: String, memory: String, prompts: AIPrompts, lang: String,
-        detail: String, web: Bool, sites: String, read: Int
+        detail: String, web: Bool, sites: String, read: Int, partial: PartialText?
     ) async throws -> (answer: String, sources: [WebSource]) {
         var results: [WebResult] = []
         if web {
@@ -270,7 +312,7 @@ actor SwiftAIEngine: AIEngine {
         blocks.append("\(prompts.question) \(question)\n\(instruction) \(length)")
         let raw = try await llm.generate(
             system: systemPrompt(prompts, open: true), user: blocks.joined(separator: "\n\n"),
-            maxTokens: (Self.answerMaxTokens[detail] ?? 700) + 100, temperature: 0.4
+            maxTokens: (Self.answerMaxTokens[detail] ?? 700) + 100, temperature: 0.4, partial: partial
         )
         return (try AIText.cleanAnswer(raw), AIText.sources(results))
     }
@@ -321,7 +363,7 @@ actor SwiftAIEngine: AIEngine {
     /// "Ampliar con internet": the whole answer again, extended with the web.
     func extend(
         question: String, previous: String, notes: String, lang: String, detail: String,
-        sites: String, readPages: Bool
+        sites: String, readPages: Bool, partial: PartialText?
     ) async throws -> (answer: String, sources: [WebSource]) {
         defer { scheduleIdleUnload() }
         let question = AIText.trimmed(question)
@@ -344,7 +386,7 @@ actor SwiftAIEngine: AIEngine {
         let detail = detailKey(detail)
         let raw = try await llm.generate(
             system: systemPrompt(prompts), user: blocks.joined(separator: "\n\n"),
-            maxTokens: (Self.answerMaxTokens[detail] ?? 700) + 100, temperature: 0.2
+            maxTokens: (Self.answerMaxTokens[detail] ?? 700) + 100, temperature: 0.2, partial: partial
         )
         return (try AIText.cleanAnswer(raw), AIText.sources(results))
     }
@@ -353,7 +395,7 @@ actor SwiftAIEngine: AIEngine {
     /// given ("" if nothing new).
     func complement(
         question: String, previous: String, notes: String, lang: String, detail: String,
-        sites: String, readPages: Bool
+        sites: String, readPages: Bool, partial: PartialText?
     ) async throws -> (answer: String, sources: [WebSource]) {
         defer { scheduleIdleUnload() }
         let question = AIText.trimmed(question)
@@ -374,7 +416,7 @@ actor SwiftAIEngine: AIEngine {
         blocks.append("\(prompts.complement) \(length)")
         let raw = try await llm.generate(
             system: systemPrompt(prompts, open: true), user: blocks.joined(separator: "\n\n"),
-            maxTokens: (Self.complementMaxTokens[detail] ?? 650) + 60, temperature: 0.2
+            maxTokens: (Self.complementMaxTokens[detail] ?? 650) + 60, temperature: 0.2, partial: partial
         )
         var answer = try AIText.cleanAnswer(raw)
         if AIText.saysNothingNew(answer) { answer = "" }

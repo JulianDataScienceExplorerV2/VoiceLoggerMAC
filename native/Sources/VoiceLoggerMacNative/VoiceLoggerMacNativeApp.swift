@@ -42,6 +42,9 @@ struct QAItem: Identifiable, Equatable {
     /// to compare the Python and Swift engines.
     var elapsed: Double?
     var engine = ""
+    /// Text so far while the answer / complement is being written (Swift engine).
+    var partial: String?
+    var complementPartial: String?
     /// Ideas mode, second step: what the web adds to the quick answer
     /// ("Puede complementar tu pregunta"). nil = not asked; "" = nothing new.
     var complement: String?
@@ -230,6 +233,17 @@ final class AppState: ObservableObject {
             guard oldValue != aiEngine else { return }
             save()
             switchEngine()
+        }
+    }
+    /// Swift engine: speculative decoding with a small helper model (faster, +~0.4 GB).
+    @Published var speculativeDecoding = true {
+        didSet {
+            guard !isLoading, oldValue != speculativeDecoding else { return }
+            save()
+            if let engine = qwen as? SwiftAIEngine {
+                let enabled = speculativeDecoding
+                Task { await engine.setSpeculative(enabled) }
+            }
         }
     }
     @Published var qwenModel = QwenModels.default {
@@ -734,7 +748,10 @@ final class AppState: ObservableObject {
     private func resolveServer() -> (any AIEngine)? {
         if let qwen { return qwen }
         if aiEngine == "swift" {
-            let engine = SwiftAIEngine(model: qwenModel, contextFile: contextFile, contextExample: resolveBridge()?.contextExample)
+            let engine = SwiftAIEngine(
+                model: qwenModel, contextFile: contextFile, contextExample: resolveBridge()?.contextExample,
+                speculative: speculativeDecoding
+            )
             qwen = engine
             return engine
         }
@@ -1179,7 +1196,7 @@ final class AppState: ObservableObject {
                 let result = try await server.ask(
                     question: question, text: context, notes: notes, session: session,
                     memoryDir: directory, lang: lang, detail: detail, mode: mode, web: twoStep ? false : web,
-                    sites: sites, readPages: readPages, prefetchWeb: twoStep
+                    sites: sites, readPages: readPages, prefetchWeb: twoStep, partial: self.partialHandler(item.id)
                 )
                 answer = result.answer
                 sources = result.sources
@@ -1206,7 +1223,7 @@ final class AppState: ObservableObject {
             do {
                 let result = try await server.complement(
                     question: question, previous: answer, notes: notes, lang: lang, detail: detail,
-                    sites: sites, readPages: readPages
+                    sites: sites, readPages: readPages, partial: self.partialHandler(item.id, complement: true)
                 )
                 extra = result.answer
                 extraSources = result.sources
@@ -1225,6 +1242,25 @@ final class AppState: ObservableObject {
             }
         }
         return true
+    }
+
+    /// Shows the text written so far (the Swift engine streams answers). Late
+    /// updates after the final answer are ignored.
+    private func showPartial(_ id: UUID, _ text: String, complement: Bool) {
+        guard let index = qaItems.firstIndex(where: { $0.id == id }) else { return }
+        if complement {
+            guard qaItems[index].complementLoading else { return }
+            qaItems[index].complementPartial = text
+        } else {
+            guard qaItems[index].answer == nil else { return }
+            qaItems[index].partial = text
+        }
+    }
+
+    private func partialHandler(_ id: UUID, complement: Bool = false) -> PartialText {
+        return { [weak self] text in
+            Task { @MainActor in self?.showPartial(id, text, complement: complement) }
+        }
     }
 
     /// Opens qwen_context.txt (persona / context prepended to every prompt),
@@ -1408,7 +1444,7 @@ final class AppState: ObservableObject {
             do {
                 let result = try await server.extend(
                     question: question, previous: previous, notes: notes, lang: lang, detail: detail,
-                    sites: sites, readPages: readPages
+                    sites: sites, readPages: readPages, partial: self.partialHandler(webItem.id)
                 )
                 answer = result.answer
                 sources = result.sources
@@ -1561,6 +1597,7 @@ final class AppState: ObservableObject {
         d.set(questionsInterval, forKey: "questions_interval")
         d.set(qwenModel, forKey: "qwen_model")
         d.set(aiEngine, forKey: "ai_engine")
+        d.set(speculativeDecoding, forKey: "speculative_decoding")
         d.set(longAnswers, forKey: "long_answers")
         d.set(answerMode, forKey: "answer_mode")
         d.set(liveSpeed, forKey: "live_speed")
@@ -1588,7 +1625,7 @@ final class AppState: ObservableObject {
         else { return }
         let keys = [
             "model", "language", "sensitivity", "alerts", "alert_sound", "autoscroll", "ai_lang", "auto_summary",
-            "font_size", "always_on_top", "dim_when_idle", "live_interval", "qwen_model", "ai_engine", "ui_scale",
+            "font_size", "always_on_top", "dim_when_idle", "live_interval", "qwen_model", "ai_engine", "speculative_decoding", "ui_scale",
             "long_answers", "answer_mode", "live_speed", "vocabulary", "show_key_questions", "ai_questions", "questions_interval", "ask_tasks_on_stop", "allow_web_search", "preferred_sites", "read_web_pages", "ask_models_on_launch", "models_chosen", "python_root",
         ]
         for key in keys {
@@ -1619,6 +1656,7 @@ final class AppState: ObservableObject {
         let savedModel = d.string(forKey: "qwen_model") ?? QwenModels.default
         qwenModel = QwenModels.choices.contains(where: { $0.id == savedModel }) ? savedModel : QwenModels.default
         aiEngine = d.string(forKey: "ai_engine") == "swift" ? "swift" : "python"
+        speculativeDecoding = d.object(forKey: "speculative_decoding") as? Bool ?? true
         longAnswers = d.object(forKey: "long_answers") as? Bool ?? true
         answerMode = d.string(forKey: "answer_mode") ?? "open"
         liveSpeed = d.string(forKey: "live_speed") ?? "normal"
@@ -2011,11 +2049,24 @@ struct QARow: View {
     @ViewBuilder
     private var complementView: some View {
         if item.complementLoading {
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.small)
-                Text("Buscando en internet algo que complemente la respuesta…")
-                    .scaledFont(11)
-                    .foregroundStyle(.secondary)
+            if let partial = item.complementPartial, !partial.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("Puede complementar tu pregunta", systemImage: "globe")
+                        .scaledFont(11, weight: .bold)
+                        .foregroundStyle(Theme.qa)
+                    MarkdownText(markdown: partial, fontSize: fontSize - 1, accent: Theme.qa)
+                    ProgressView().controlSize(.small)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Theme.qa.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            } else {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Buscando en internet algo que complemente la respuesta…")
+                        .scaledFont(11)
+                        .foregroundStyle(.secondary)
+                }
             }
         } else if let extra = item.complement {
             if extra.isEmpty {
@@ -2129,6 +2180,15 @@ struct QARow: View {
                                 .foregroundStyle(Theme.qa)
                                 .help("Busca solo esta pregunta en DuckDuckGo / Wikipedia (y tus sitios preferidos); la reunión no sale de tu Mac")
                             }
+                        }
+                    }
+                } else if let partial = item.partial, !partial.isEmpty {
+                    // The Swift engine shows the answer while it is written.
+                    VStack(alignment: .leading, spacing: 6) {
+                        MarkdownText(markdown: partial, fontSize: fontSize, accent: Theme.qa)
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Escribiendo…").scaledFont(11).foregroundStyle(.secondary)
                         }
                     }
                 } else {
@@ -2864,6 +2924,10 @@ struct SettingsPopover: View {
                     Text("Swift nativo (beta)").tag("swift")
                 }
                 .help("Swift nativo: la IA corre dentro de la app con MLX Swift, sin Python. Mismos modelos, prompts y búsqueda; está en pruebas. Necesita la app empaquetada con native/package.sh.")
+                if state.aiEngine == "swift" {
+                    Toggle("Acelerar con un modelo ayudante (+0,4 GB de RAM)", isOn: $state.speculativeDecoding)
+                        .help("Decodificación especulativa: un Qwen pequeño de la misma familia propone palabras y el modelo principal las confirma de a varias. Misma calidad, escribe más rápido. La primera vez descarga el ayudante (~0,4 GB). No aplica a LFM2.5.")
+                }
                 Picker("Modelo", selection: $state.qwenModel) {
                     ForEach(QwenModels.choices, id: \.id) { choice in
                         Text(choice.label).tag(choice.id)

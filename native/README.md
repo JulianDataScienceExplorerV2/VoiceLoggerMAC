@@ -273,6 +273,19 @@ modelo pequeño pueden fallar: revisa las fuentes.
   - Usa **los mismos modelos y la misma caché** (`~/.cache/huggingface/hub`): no vuelve a descargarlos.
   - Una generación a la vez (como el hilo único de Python), caché de MLX limitada a 512 MB y vaciada tras cada
     respuesta, y el modelo se libera tras 10 min sin uso.
+  - **Optimizaciones que el motor Python no tiene:**
+    1. **Respuesta en vivo:** el texto aparece mientras se escribe («Escribiendo…»), también el complemento de
+       Ideas y «Ampliar con internet»; las primeras palabras salen en ~1 s.
+    2. **Decodificación especulativa** (⚙ «Acelerar con un modelo ayudante», activada): Qwen3 0.6B (o Qwen2.5 0.5B)
+       propone 3 palabras y el modelo principal las confirma de una vez. Misma calidad, escribe más rápido;
+       +~0,4 GB de RAM y una descarga la primera vez. No aplica a LFM2.5.
+    3. **Caché del prompt fijo:** las instrucciones y tu `qwen_context.txt` se procesan una vez por variante
+       (Reunión / Ideas e idioma) y cada petición parte de una copia (`ChatSession.fork`).
+    4. **Memoria de trabajo (KV) en 8 bits** a partir de 1024 tokens: la mitad de memoria en prompts largos
+       (resumen, respuestas con páginas web), casi sin pérdida; los cortos (preguntas en vivo) no cambian.
+    - Si alguna optimización falla en tu Mac, esa respuesta se repite en modo normal y el modelo sigue así hasta
+      cambiarlo o liberarlo: nunca se queda sin responder por una optimización.
+    - Debajo de cada respuesta sale el motor y los segundos (p. ej. «Swift · 3,1 s») para compararlos.
   - **Necesita la app empaquetada con `native/package.sh`** (xcodebuild). Con `swift run` los shaders de MLX no se
     compilan: la app lo detecta y avisa en vez de cerrarse; usa el motor Python en ese caso.
   - El archivo de contexto es el mismo `qwen_context.txt` del repo (o uno en Application Support si no hay repo).
