@@ -79,6 +79,8 @@ botones y ajustes; *Letra de lectura* (A- / A+) agranda transcripción, resumen 
   repetidas (y de lo que pase de 25 líneas por sección) antes de mostrarse y de usarse como
   *notas anteriores*: un resumen roto («X» ×80) ya no se arrastra a la siguiente actualización.
 - **Preguntas clave**: salen del propio resumen y se muestran arriba del panel *Preguntas*.
+  En **naranja** (💬) las que alguien dijo tal cual en la reunión (se comprueba contra la transcripción, aunque
+  la pregunta quede partida entre dos bloques); en azul las que la IA redactó a partir de lo que se habló.
   Al tocar una, Qwen la responde con lo dicho en la reunión.
 - Whisper también se precarga al abrir la app; los archivos de ambos modelos ya quedan en la
   caché de disco tras la primera descarga.

@@ -29,6 +29,8 @@ struct QAItem: Identifiable, Equatable {
     var fromWeb = false
     /// Answered in "Ideas" mode (meeting + own knowledge + web).
     var brainstorm = false
+    /// A question said word for word in the meeting (shown in orange).
+    var literal = false
     /// Ideas mode, second step: what the web adds to the quick answer
     /// ("Puede complementar tu pregunta"). nil = not asked; "" = nothing new.
     var complement: String?
@@ -294,7 +296,7 @@ final class AppState: ObservableObject {
         readingHoverTask?.cancel()
         if pinned { readingPinned = true }
         guard !readingAnswers else { return }
-        withAnimation(.easeOut(duration: 0.2)) { readingAnswers = true }
+        withAnimation(.easeInOut(duration: 0.4)) { readingAnswers = true }
     }
 
     func closeReading() {
@@ -770,6 +772,7 @@ final class AppState: ObservableObject {
             case .success(let insights):
                 self.liveMarkdown = insights.markdown
                 self.liveSummary = insights.summary
+                self.classifyQuestions(insights.questions)
                 self.keyQuestions = insights.questions
                 self.rememberQuestions(insights.questions)
                 self.actionItems = insights.actionItems
@@ -946,7 +949,7 @@ final class AppState: ObservableObject {
         // Demote the model's "##" sections one level under this heading.
         md.append(liveSummary.isEmpty ? "_(sin resumen)_" : liveSummary.replacingOccurrences(of: "\n## ", with: "\n### ").replacingOccurrences(of: "## ", with: "### ", options: .anchored))
         if !questionHistory.isEmpty {
-            md += ["", "## Preguntas clave", ""] + questionHistory.map { "- [\($0.time)] \($0.text)" }
+            md += ["", "## Preguntas clave", ""] + questionHistory.map { questionLine($0) }
         }
         if !meetingTasks.isEmpty {
             md += ["", "## Tareas", ""] + meetingTasks.map(\.markdownLine)
@@ -1015,7 +1018,7 @@ final class AppState: ObservableObject {
             return false
         }
         let mode = answerMode
-        let item = QAItem(question: question, brainstorm: mode == "open")
+        let item = QAItem(question: question, brainstorm: mode == "open", literal: isLiteral(question))
         qaItems.append(item)
         qaRevision += 1
         let lang = summaryLang
@@ -1174,6 +1177,31 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Detected questions said word for word in the meeting (by `questionKey`);
+    /// the others were phrased by the AI. Each question is checked once.
+    @Published private(set) var literalKeys: Set<String> = []
+    private var checkedQuestionKeys: Set<String> = []
+
+    func isLiteral(_ question: String) -> Bool {
+        literalKeys.contains(Self.questionKey(question))
+    }
+
+    private func classifyQuestions(_ questions: [String]) {
+        let pending = questions.filter { !checkedQuestionKeys.contains(Self.questionKey($0)) }
+        guard !pending.isEmpty else { return }
+        let said = LiteralQuestions.questions(in: entries.map(\.text).joined(separator: " "))
+        for question in pending {
+            let key = Self.questionKey(question)
+            checkedQuestionKeys.insert(key)
+            if LiteralQuestions.isLiteral(question, in: said) { literalKeys.insert(key) }
+        }
+    }
+
+    /// "- [10:42] Question" (+ "dicha en la reunión" if literal), for copy / export.
+    func questionLine(_ question: DetectedQuestion) -> String {
+        "- [\(question.time)] \(question.text)\(isLiteral(question.text) ? " _(dicha en la reunión)_" : "")"
+    }
+
     private static func questionKey(_ text: String) -> String {
         text.lowercased().filter { $0.isLetter || $0.isNumber }
     }
@@ -1196,7 +1224,7 @@ final class AppState: ObservableObject {
     func copySummaryTab() {
         switch summaryTab {
         case "questions":
-            copyText(questionHistory.map { "- [\($0.time)] \($0.text)" }.joined(separator: "\n"), message: "Preguntas copiadas")
+            copyText(questionHistory.map { questionLine($0) }.joined(separator: "\n"), message: "Preguntas copiadas")
         case "tasks":
             copyText(actionItems.map { "- [ ] \($0)" }.joined(separator: "\n"), message: "Tareas copiadas")
         default:
@@ -1213,7 +1241,7 @@ final class AppState: ObservableObject {
             toast(PythonBridge.missingMessage, kind: "error")
             return
         }
-        let webItem = QAItem(question: item.question, fromWeb: true)
+        let webItem = QAItem(question: item.question, fromWeb: true, literal: item.literal)
         qaItems.append(webItem)
         qaRevision += 1
         let question = item.question
@@ -1264,6 +1292,8 @@ final class AppState: ObservableObject {
         summarizedText = ""
         keyQuestions = []
         questionHistory = []
+        literalKeys = []
+        checkedQuestionKeys = []
         actionItems = []
         // A cleared transcript starts a new memory session (the old file stays on disk).
         sessionID = nil
@@ -1486,6 +1516,8 @@ enum Theme {
     static let cardBorder = Color.white.opacity(0.07)
     static let row = Color.white.opacity(0.035)
     static let brand = Color(red: 0.06, green: 0.73, blue: 0.51)
+    /// Questions said word for word in the meeting (#FF9E33, 8.8:1 on the cards).
+    static let literal = Color(red: 1.0, green: 0.62, blue: 0.20)
     /// Darker fills for white text (WCAG ≥ 4.5:1): the bright brand/red/orange
     /// only reach 2.4-3.4:1 behind white text. Accents and titles keep the bright ones.
     static let brandStrong = Color(red: 0.043, green: 0.490, blue: 0.353)   // #0B7D5A · 5.1:1
@@ -1784,6 +1816,20 @@ struct TranscriptRow: View {
     }
 }
 
+/// What the colours of the detected questions mean.
+struct QuestionLegend: View {
+    var body: some View {
+        HStack(spacing: 12) {
+            Label("Dicha en la reunión", systemImage: "quote.bubble.fill")
+                .foregroundStyle(Theme.literal)
+            Label("Sacada por la IA", systemImage: "questionmark.circle.fill")
+                .foregroundStyle(Theme.qa)
+        }
+        .scaledFont(10, weight: .semibold)
+        .help("Naranja: alguien la dijo tal cual (está en la transcripción). Azul: la IA la redactó a partir de lo que se habló.")
+    }
+}
+
 struct QARow: View {
     let item: QAItem
     let fontSize: Int
@@ -1837,11 +1883,13 @@ struct QARow: View {
                     .foregroundStyle(Theme.ai)
             }
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Image(systemName: "person.fill")
+                Image(systemName: item.literal ? "quote.bubble.fill" : "person.fill")
                     .scaledFont(12)
-                    .foregroundStyle(Theme.qa)
+                    .foregroundStyle(item.literal ? Theme.literal : Theme.qa)
+                    .help(item.literal ? "Pregunta dicha tal cual en la reunión" : "Pregunta")
                 Text(item.question)
                     .font(.system(size: CGFloat(fontSize), weight: .semibold))
+                    .foregroundStyle(item.literal ? Theme.literal : Color.primary)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if item.answer != nil, !item.failed {
@@ -2291,6 +2339,7 @@ struct FullView: View {
             Text("Todavía no hay preguntas clave. Salen solas con el resumen en vivo y se quedan aquí toda la reunión.")
                 .foregroundStyle(.secondary)
         } else {
+            QuestionLegend()
             if !state.keyQuestions.isEmpty {
                 Text("AHORA")
                     .scaledFont(10, weight: .bold)
@@ -2499,6 +2548,7 @@ struct FullView: View {
     @ViewBuilder
     private func keyQuestionRow(_ question: String, time: String? = nil) -> some View {
         let answering = state.isAnswering(question)
+        let literal = state.isLiteral(question)
         let plain = String(MarkdownText.inline(question).characters)
         HStack(alignment: .firstTextBaseline, spacing: 4) {
             if let time {
@@ -2510,10 +2560,11 @@ struct FullView: View {
                 state.ask(question)
             } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Image(systemName: "questionmark.circle.fill")
-                        .foregroundStyle(Theme.qa)
+                    Image(systemName: literal ? "quote.bubble.fill" : "questionmark.circle.fill")
+                        .foregroundStyle(literal ? Theme.literal : Theme.qa)
                     Text(MarkdownText.inline(question))
                         .font(.system(size: CGFloat(max(12, state.transcriptFontSize - 2))))
+                        .foregroundStyle(literal ? Theme.literal : Color.primary)
                         .lineLimit(3)
                         .multilineTextAlignment(.leading)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -2529,7 +2580,8 @@ struct FullView: View {
             }
             .buttonStyle(.plain)
             .disabled(answering)
-            .help("Pedir a la IA que la responda con lo dicho en la reunión (la respuesta sale en Preguntas)")
+            .help((literal ? "Dicha tal cual en la reunión. " : "La IA la sacó de lo que se habló. ")
+                  + "Clic: la IA la responde (sale en Preguntas)")
             IconButton(systemImage: "doc.on.doc", help: "Copiar pregunta") {
                 state.copyText(plain, message: "Pregunta copiada")
             }
@@ -2560,6 +2612,9 @@ struct FullView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Ocultar (vuelven con el botón ? de la cabecera)")
+            }
+            if state.keyQuestions.prefix(5).contains(where: { state.isLiteral($0) }) {
+                QuestionLegend()
             }
             ForEach(Array(state.keyQuestions.prefix(5).enumerated()), id: \.offset) { item in
                 keyQuestionRow(item.element)

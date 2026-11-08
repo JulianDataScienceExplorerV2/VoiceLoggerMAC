@@ -70,5 +70,28 @@ final class TextFormattingTests: XCTestCase {
             XCTAssertEqual(TranscriptCleaner.clean(text), text)
         }
     }
-}
 
+    func testLiteralQuestionsFromTheTranscript() {
+        // Two Whisper blocks joined: the first question is split across them.
+        let transcript = "How do you explain when things don't go as we assume? " +
+            "So why is it that Martin Luther King led the civil rights movement? Why does your organization exist? " +
+            "Bueno, ¿cuándo es la entrega del informe? Right?"
+        let said = LiteralQuestions.questions(in: transcript)
+        XCTAssertEqual(said.count, 4)  // "Right?" is too short
+        for question in [
+            "How do you explain when things don't go as we assume?",
+            "Why is it that Martin Luther King led the civil rights movement?",
+            "**Why does your organization exist?**",
+            "¿Cuándo es la entrega del informe?",
+        ] {
+            XCTAssertTrue(LiteralQuestions.isLiteral(question, in: said), question)
+        }
+        for question in [
+            "What makes some leaders inspire action while others don't?",
+            "Why did the Wright brothers succeed?",
+            "Why do some organizations fail to inspire?",
+        ] {
+            XCTAssertFalse(LiteralQuestions.isLiteral(question, in: said), question)
+        }
+    }
+}

@@ -138,3 +138,53 @@ enum MarkdownBlock: Equatable {
         return blocks
     }
 }
+
+/// Tells the questions said word for word in the meeting apart from the ones
+/// the AI phrased from what it heard (the live summary's key questions can be
+/// either).
+enum LiteralQuestions {
+    /// Words of every question in `text`: the sentence before each "?" (from
+    /// the previous . ! ? or the start). Join the transcript blocks first, so a
+    /// question split across two blocks is found whole.
+    static func questions(in text: String) -> [[String]] {
+        var result: [[String]] = []
+        var sentence = ""
+        for character in text {
+            if character == "." || character == "!" || character == "?" {
+                if character == "?" {
+                    let said = words(sentence)
+                    if said.count >= 3 { result.append(said) }
+                }
+                sentence = ""
+            } else {
+                sentence.append(character)
+            }
+        }
+        return result
+    }
+
+    /// Lowercase words without accents or punctuation ("¿Qué?" → ["que"]).
+    static func words(_ text: String) -> [String] {
+        text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            .lowercased()
+            .split(whereSeparator: { !($0.isLetter || $0.isNumber) })
+            .map(String.init)
+    }
+
+    /// True if `question` matches the end of a question said in the meeting:
+    /// at least 75 % of its words are there, and they are at least half of
+    /// that stretch (fillers like "so" or "bueno" before it don't matter).
+    static func isLiteral(_ question: String, in said: [[String]]) -> Bool {
+        let ordered = words(question)
+        let asked = Set(ordered)
+        guard asked.count >= 3 else { return false }
+        for spoken in said {
+            let window = Set(spoken.suffix(ordered.count + 4))
+            let common = asked.intersection(window).count
+            if Double(common) >= 0.75 * Double(asked.count), Double(common) >= 0.5 * Double(window.count) {
+                return true
+            }
+        }
+        return false
+    }
+}
